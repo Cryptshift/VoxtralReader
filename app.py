@@ -1,19 +1,43 @@
+import asyncio
 import json
 import os
 import re
 import struct
 import tempfile
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel
 
 from pdf_processor import is_speakable, process_pdf
 import books_reader
 
-app = FastAPI(title="Voxtral Reader")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# One pooled client for all calls to the TTS server (created lazily so it is
+# bound to the running event loop, closed on shutdown).
+_http: httpx.AsyncClient | None = None
+
+
+def _client() -> httpx.AsyncClient:
+    global _http
+    if _http is None or _http.is_closed:
+        _http = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0))
+    return _http
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    yield
+    if _http is not None:
+        await _http.aclose()
+
+
+app = FastAPI(title="Voxtral Reader", lifespan=_lifespan)
 
 documents: dict = {}
 
@@ -91,9 +115,18 @@ def _dirs():
 
 def _load_meta() -> list:
     try:
-        return json.loads(HIST_FILE.read_text()) if HIST_FILE.exists() else []
+        raw = json.loads(HIST_FILE.read_text()) if HIST_FILE.exists() else []
     except Exception:
         return []
+    if not isinstance(raw, list):
+        return []
+    # One entry per doc_id (the latest wins), skipping malformed rows.
+    by_id: dict = {}
+    for e in raw:
+        if isinstance(e, dict) and isinstance(e.get("doc_id"), str):
+            by_id.pop(e["doc_id"], None)
+            by_id[e["doc_id"]] = e
+    return list(by_id.values())
 
 def _save_meta(entries: list):
     _dirs()
@@ -103,7 +136,7 @@ def _save_meta(entries: list):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return Path("static/index.html").read_text()
+    return (STATIC_DIR / "index.html").read_text()
 
 
 @app.post("/upload")
@@ -114,11 +147,19 @@ async def upload_pdf(file: UploadFile = File(...), include_refs: bool = Query(Fa
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         f.write(content); tmp = f.name
     try:
-        doc = process_pdf(tmp, include_references=include_refs)
+        # PyMuPDF parsing is CPU-bound: keep it off the event loop so audio
+        # requests for an already-open document keep flowing meanwhile.
+        doc = await asyncio.to_thread(process_pdf, tmp, include_references=include_refs)
     except Exception as e:
         raise HTTPException(500, f"PDF processing failed: {e}")
     finally:
         os.unlink(tmp)
+    if not doc["chunks"]:
+        raise HTTPException(
+            422,
+            "No readable text found in this PDF. It may be a scanned (image-only) "
+            "document; run it through OCR first.",
+        )
     # Random ids: never reused across restarts, so they can't collide with
     # (and overwrite) documents already saved in history.
     doc_id = uuid.uuid4().hex
@@ -131,24 +172,27 @@ async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOIC
     doc = _get_doc(doc_id)
     if doc is None:
         raise HTTPException(404, "Document not found")
-    if chunk_idx >= len(doc["chunks"]):
+    if not 0 <= chunk_idx < len(doc["chunks"]):
         raise HTTPException(404, "Chunk index out of range")
     text = doc["chunks"][chunk_idx]["text"].strip()
     if not is_speakable(text):
         return Response(content=_silence_wav(), media_type="audio/wav")
     try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            resp = await client.post(f"{VLLM_URL}/v1/audio/speech", json={
-                "input": text, "model": TTS_MODEL,
-                "response_format": "wav", "voice": voice,
-            })
-            resp.raise_for_status()
-            return Response(content=resp.content, media_type="audio/wav")
+        resp = await _client().post(f"{VLLM_URL}/v1/audio/speech", json={
+            "input": text, "model": TTS_MODEL,
+            "response_format": "wav", "voice": voice,
+        })
+        resp.raise_for_status()
+        return Response(content=resp.content, media_type="audio/wav")
     except httpx.ConnectError:
         raise HTTPException(503, "TTS server unreachable — is mlx-audio running?")
+    except httpx.TimeoutException:
+        raise HTTPException(504, "TTS server timed out")
     except httpx.HTTPStatusError as e:
         body = e.response.text[:200]
         raise HTTPException(502, f"TTS server returned {e.response.status_code}: {body}")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"TTS request failed: {e}")
 
 
 @app.post("/restore")
@@ -186,17 +230,23 @@ async def get_history():
     return _load_meta()
 
 
+class HistoryEntry(BaseModel):
+    doc_id: str
+    filename: str
+    timestamp: str
+    total_chunks: int
+    data: dict
+
+
 @app.post("/history")
-async def save_history(payload: dict):
+async def save_history(entry: HistoryEntry):
+    path = _doc_path(entry.doc_id)
     _dirs()
-    doc_id = payload["doc_id"]
     # Persist full doc data separately
-    _doc_path(doc_id).write_text(
-        json.dumps(payload["data"], ensure_ascii=False)
-    )
-    # Update metadata list
-    meta = {k: payload[k] for k in ("doc_id","filename","timestamp","total_chunks")}
-    entries = [e for e in _load_meta() if e["doc_id"] != doc_id]
+    path.write_text(json.dumps(entry.data, ensure_ascii=False))
+    # Update metadata list (one entry per doc_id)
+    meta = entry.model_dump(exclude={"data"})
+    entries = [e for e in _load_meta() if e["doc_id"] != entry.doc_id]
     entries.append(meta)
     _save_meta(entries)
     return {"ok": True}
@@ -227,7 +277,7 @@ async def delete_history(doc_id: str):
 
 @app.get("/books/status")
 async def books_status():
-    win = books_reader.get_books_window()
+    win = await asyncio.to_thread(books_reader.get_books_window)
     return {
         "available":   books_reader.available(),
         "books_open":  win is not None,
@@ -240,7 +290,7 @@ async def books_capture():
     """Screenshot + OCR the current Books page and register it as a document."""
     global _books_state
 
-    lines, win = books_reader.ocr_page()
+    lines, win = await asyncio.to_thread(books_reader.ocr_page)
     if not lines or win is None:
         raise HTTPException(
             503,
@@ -329,17 +379,16 @@ async def books_next_page():
     """Clear highlights and advance one page in Books."""
     if _highlight_api:
         _highlight_api.clear()
-    books_reader.turn_page()
+    await asyncio.to_thread(books_reader.turn_page)
     return {"ok": True}
 
 
 @app.get("/voices")
 async def list_voices():
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{VLLM_URL}/v1/audio/voices")
-            if r.status_code == 200:
-                return r.json()
+        r = await _client().get(f"{VLLM_URL}/v1/audio/voices", timeout=5.0)
+        if r.status_code == 200:
+            return r.json()
     except Exception:
         pass
     return {"voices": PRESET_VOICES}
@@ -348,9 +397,8 @@ async def list_voices():
 @app.get("/health")
 async def health():
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.get(f"{VLLM_URL}/v1/models")
-            vllm_ok = r.status_code == 200
+        r = await _client().get(f"{VLLM_URL}/v1/models", timeout=3.0)
+        vllm_ok = r.status_code == 200
     except Exception:
         vllm_ok = False
     return {"app": "ok", "vllm": vllm_ok}
