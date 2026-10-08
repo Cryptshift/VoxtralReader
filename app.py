@@ -13,6 +13,7 @@ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
+from audio_cache import AudioCache, cache_key
 from pdf_processor import is_speakable, process_pdf
 import books_reader
 
@@ -106,6 +107,16 @@ def _doc_path(doc_id: str) -> Path:
     return path
 
 
+# Generated audio is cached under VOXTRAL_HOME/cache, capped at
+# VOXTRAL_AUDIO_CACHE_MB megabytes (least recently used files go first;
+# 0 disables the cache).
+AUDIO_CACHE_MAX_BYTES = int(float(os.getenv("VOXTRAL_AUDIO_CACHE_MB", "2048")) * 1024 * 1024)
+
+
+def _audio_cache() -> AudioCache:
+    return AudioCache(DATA_DIR / "cache", AUDIO_CACHE_MAX_BYTES)
+
+
 def _get_doc(doc_id: str) -> dict | None:
     """Look a document up in memory, falling back to its saved history file
     (the in-memory store is empty after a server restart)."""
@@ -195,18 +206,31 @@ async def get_audio(request: Request, doc_id: str, chunk_idx: int,
     text = doc["chunks"][chunk_idx]["text"].strip()
     if not is_speakable(text):
         return Response(content=_silence_wav(), media_type="audio/wav")
-    payload = {
-        "model": TTS_MODEL, "input": text, "voice": voice,
+    params = {
         "response_format": "pcm", "stream": True,
-        "streaming_interval": TTS_STREAM_INTERVAL,
+        "streaming_interval": TTS_STREAM_INTERVAL, "sample_rate": TTS_SAMPLE_RATE,
     }
+    key = cache_key(model=TTS_MODEL, voice=voice, params=params, text=text)
+    cache = _audio_cache()
+    cached = await asyncio.to_thread(cache.get, key)
+    if cached is not None:
+        return Response(content=cached, media_type="audio/wav", headers={"X-Cache": "hit"})
+
+    payload = {"model": TTS_MODEL, "input": text, "voice": voice,
+               **{k: v for k, v in params.items() if k != "sample_rate"}}
     try:
         pcm = await _unless_disconnected(request, _synthesize_pcm(payload))
     except _ClientGone:
         # The browser aborted (stop, skip, voice change). Closing our upstream
-        # request made mlx-audio cancel the generation; nobody reads this.
+        # request made mlx-audio cancel the generation; nobody reads this, and
+        # nothing is cached.
         return Response(status_code=499)
-    return Response(content=_wav(pcm, TTS_SAMPLE_RATE), media_type="audio/wav")
+    wav = _wav(pcm, TTS_SAMPLE_RATE)
+    try:
+        await asyncio.to_thread(cache.put, key, wav)
+    except OSError as e:
+        print(f"  ! Could not write audio cache: {e}")
+    return Response(content=wav, media_type="audio/wav", headers={"X-Cache": "miss"})
 
 
 class _ClientGone(Exception):
@@ -524,6 +548,18 @@ async def list_voices():
     except Exception:
         pass
     return {"voices": voices or PRESET_VOICES, "default": DEFAULT_VOICE}
+
+
+@app.get("/cache")
+async def cache_stats():
+    return await asyncio.to_thread(_audio_cache().stats)
+
+
+@app.delete("/cache")
+async def clear_cache():
+    cache = _audio_cache()
+    await asyncio.to_thread(cache.clear)
+    return await asyncio.to_thread(cache.stats)
 
 
 @app.get("/health")

@@ -207,6 +207,30 @@
   }
   .hist-del:hover { color: var(--danger); background: rgba(248,81,73,0.1); }
 
+  /* audio cache readout at the bottom of the sidebar */
+  .sidebar-footer {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--muted);
+    font-size: 11px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .link-btn:hover { color: var(--text); }
+  .link-btn:disabled { opacity: 0.4; cursor: default; text-decoration: none; }
+
   .section-item {
     display: flex;
     align-items: center;
@@ -576,6 +600,10 @@
       <div id="history-empty" style="padding:20px 14px;color:var(--muted);font-size:12px;">
         No documents loaded yet
       </div>
+    </div>
+    <div class="sidebar-footer">
+      <span id="cache-size" title="Generated audio kept on disk so re-reading is instant">Audio cache: —</span>
+      <button class="link-btn" id="btn-clear-cache" title="Delete all cached audio">Clear</button>
     </div>
   </aside>
 
@@ -1312,6 +1340,7 @@ function renderDocument(data) {
 // ── Player callbacks ──
 player.onChunkCached = idx => {
   if (chunkEls[idx]) chunkEls[idx].classList.add('cached');
+  scheduleCacheRefresh();
 };
 
 player.onChunkChange = idx => {
@@ -1455,9 +1484,46 @@ function updateSectionHighlight(chunkIdx) {
   if (best) best.classList.add('active');
 }
 
+// ── Audio cache readout ──
+function fmtBytes(n) {
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  if (n < 1024 ** 3)   return `${(n / 1024 ** 2).toFixed(n < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+  return `${(n / 1024 ** 3).toFixed(1)} GB`;
+}
+
+let cacheBytes = 0;
+async function refreshCacheStats() {
+  try {
+    const j = await (await fetch('/cache')).json();
+    cacheBytes = j.bytes;
+    $('cache-size').textContent = j.max_bytes > 0
+      ? `Audio cache: ${fmtBytes(j.bytes)} of ${fmtBytes(j.max_bytes)}`
+      : 'Audio cache: off';
+    $('btn-clear-cache').disabled = j.files === 0;
+  } catch {}
+}
+
+let cacheRefreshTimer = null;
+function scheduleCacheRefresh() {
+  clearTimeout(cacheRefreshTimer);
+  cacheRefreshTimer = setTimeout(refreshCacheStats, 1500);
+}
+
+$('btn-clear-cache').addEventListener('click', async () => {
+  if (!confirm(`Delete ${fmtBytes(cacheBytes)} of cached audio? Paragraphs will be generated again when you replay them.`)) return;
+  try {
+    await fetch('/cache', { method: 'DELETE' });
+    showToast('Audio cache cleared', 2000);
+  } catch {
+    showToast('Could not clear the audio cache', 4000, true);
+  }
+  refreshCacheStats();
+});
+
 // ── Init ──
 loadHistory();
 checkServerStatus();
+refreshCacheStats();
 
 let toastTimer = null;
 function showToast(msg, dur = 3000, isErr = false) {
