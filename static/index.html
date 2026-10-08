@@ -1,0 +1,1462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voxtral Reader</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d1117;
+    --surface:   #161b22;
+    --surface2:  #21262d;
+    --border:    #30363d;
+    --accent:    #6e40c9;
+    --accent-br: #a371f7;
+    --accent-dim: rgba(110, 64, 201, 0.18);
+    --text:      #e6edf3;
+    --muted:     #8b949e;
+    --highlight: rgba(110, 64, 201, 0.22);
+    --active-border: #a371f7;
+    --success:   #3fb950;
+    --warn:      #d29922;
+    --danger:    #f85149;
+    --radius:    8px;
+    --header-h:  56px;
+    --player-h:  80px;
+    --sidebar-w: 240px;
+  }
+
+  html, body { height: 100%; overflow: hidden; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    height: var(--header-h);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .logo {
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--accent-br);
+    letter-spacing: -0.3px;
+    white-space: nowrap;
+  }
+
+  .header-sep { flex: 1; }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--border); border-color: var(--muted); }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn.primary:hover { background: var(--accent-br); border-color: var(--accent-br); }
+  .btn.books-active {
+    background: rgba(63, 185, 80, 0.15);
+    border-color: var(--success);
+    color: var(--success);
+  }
+  .btn.books-active:hover { background: rgba(63, 185, 80, 0.25); }
+
+  .file-name {
+    font-size: 13px;
+    color: var(--muted);
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  #status-dot.ok  { background: var(--success); }
+  #status-dot.bad { background: var(--danger); }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .toggle-row input[type=checkbox] { accent-color: var(--accent-br); cursor: pointer; }
+
+  /* ── Main layout ── */
+  .main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  aside {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    flex: 1;
+    padding: 9px 0;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
+    margin-bottom: -1px;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent-br); border-bottom-color: var(--accent-br); }
+
+  .tab-panel { display: none; flex: 1; overflow-y: auto; padding: 6px 0; }
+  .tab-panel.active { display: block; }
+
+  /* history items */
+  .hist-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .hist-item:hover { background: var(--surface2); }
+  .hist-item.active-doc {
+    border-left-color: var(--accent-br);
+    background: var(--accent-dim);
+  }
+  .hist-item-body { flex: 1; min-width: 0; }
+  .hist-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hist-meta {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .hist-del {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.12s, background 0.12s;
+  }
+  .hist-del:hover { color: var(--danger); background: rgba(248,81,73,0.1); }
+
+  .section-item {
+    display: flex;
+    align-items: center;
+    padding: 7px 14px;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: color 0.12s, background 0.12s, border-color 0.12s;
+    line-height: 1.3;
+  }
+  .section-item:hover { color: var(--text); background: var(--surface2); }
+  .section-item.active {
+    color: var(--accent-br);
+    border-left-color: var(--accent-br);
+    background: var(--accent-dim);
+  }
+
+  /* ── Text area ── */
+  #reader {
+    flex: 1;
+    overflow-y: auto;
+    padding: 32px 48px;
+    padding-bottom: calc(var(--player-h) + 24px);
+    scroll-behavior: smooth;
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60%;
+    gap: 12px;
+    color: var(--muted);
+  }
+  .empty-state svg { opacity: 0.3; }
+  .empty-state p { font-size: 15px; }
+  .empty-state small { font-size: 12px; opacity: 0.7; }
+
+  .chunk {
+    padding: 10px 14px;
+    margin-bottom: 6px;
+    border-radius: 6px;
+    border-left: 3px solid transparent;
+    line-height: 1.75;
+    font-size: 15px;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    max-width: 760px;
+  }
+  .chunk:hover { background: var(--surface2); border-left-color: var(--border); }
+  .chunk.cached {
+    border-left-color: rgba(63, 185, 80, 0.45);
+  }
+  .chunk.cached::after {
+    content: '';
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--success);
+    opacity: 0.55;
+    margin-left: 6px;
+    vertical-align: middle;
+    flex-shrink: 0;
+  }
+  .chunk.active {
+    background: var(--highlight);
+    border-left-color: var(--active-border);
+  }
+  .chunk.active::after { display: none; }
+  .chunk.playing {
+    background: var(--accent-dim);
+    border-left-color: var(--accent-br);
+  }
+  .chunk.playing::after { display: none; }
+
+  .section-header {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    padding: 20px 14px 6px;
+    max-width: 760px;
+  }
+  .section-header:first-child { padding-top: 4px; }
+
+  /* ── Player bar ── */
+  #player {
+    height: var(--player-h);
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 20px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .ctrl-btn {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, background 0.12s;
+    flex-shrink: 0;
+  }
+  .ctrl-btn:hover { color: var(--text); background: var(--surface2); }
+  .ctrl-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  #btn-stop:hover { color: var(--danger); background: rgba(248,81,73,0.12); }
+
+  #btn-play-pause {
+    width: 44px; height: 44px;
+    background: var(--accent);
+    color: #fff;
+  }
+  #btn-play-pause:hover { background: var(--accent-br); }
+
+  .progress-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .progress-track {
+    width: 100%;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+    overflow: visible;
+  }
+  .progress-track:hover { height: 6px; margin-top: -1px; }
+
+  #progress-fill {
+    height: 100%;
+    background: var(--accent-br);
+    border-radius: 2px;
+    pointer-events: none;
+    transition: width 0.1s linear;
+  }
+
+  #chunk-progress {
+    position: absolute;
+    height: 100%;
+    background: rgba(163, 113, 247, 0.35);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
+  .progress-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .player-select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+  }
+  .player-select:focus { border-color: var(--accent-br); }
+
+  .player-label {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .rtf-indicator {
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    color: var(--muted);
+    white-space: nowrap;
+    min-width: 52px;
+    text-align: right;
+    flex-shrink: 0;
+    transition: color 0.4s;
+  }
+  .rtf-indicator.fast { color: var(--success); }
+  .rtf-indicator.ok   { color: var(--warn); }
+  .rtf-indicator.slow { color: var(--danger); }
+
+  .loading-spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent-br);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: none;
+    flex-shrink: 0;
+  }
+  .loading-spinner.visible { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Overlay: draggable header region ── */
+  header { -webkit-app-region: drag; }
+  /* Every interactive element inside the header must opt out */
+  header button, header label, header input,
+  header select, header a, header .btn,
+  header .toggle-row, header .file-name,
+  header #status-dot, header #status-label {
+    -webkit-app-region: no-drag;
+  }
+
+  /* ── Window controls (traffic lights) ── */
+  .window-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-right: 6px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+  .wc-btn {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    position: relative;
+    transition: filter 0.12s;
+    /* extend hit-target without affecting layout */
+  }
+  .wc-btn::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+  }
+  .wc-btn:hover { filter: brightness(1.15) saturate(1.2); }
+  .wc-btn:active { filter: brightness(0.85); }
+  .wc-close    { background: #ff5f57; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.3); }
+  .wc-minimize { background: #febc2e; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.3); }
+
+  /* ── Pin button (always-on-top toggle) ── */
+  .wc-pin {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, background 0.12s;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+  .wc-pin:hover { color: var(--text); background: var(--surface2); }
+  .wc-pin.pinned { color: var(--accent-br); }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    bottom: calc(var(--player-h) + 16px);
+    left: 50%;
+    transform: translateX(-50%) translateY(8px);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 100;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.error { border-color: var(--danger); color: var(--danger); }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="window-controls">
+    <button class="wc-btn wc-close"    id="btn-wc-close"    title="Close"></button>
+    <button class="wc-btn wc-minimize" id="btn-wc-minimize" title="Minimize"></button>
+  </div>
+
+  <span class="logo">&#9654; Voxtral Reader</span>
+
+  <label class="btn primary" style="cursor:pointer;">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 1a.75.75 0 0 1 .75.75v5.5h5.5a.75.75 0 0 1 0 1.5h-5.5v5.5a.75.75 0 0 1-1.5 0v-5.5H1.75a.75.75 0 0 1 0-1.5h5.5V1.75A.75.75 0 0 1 8 1z"/>
+    </svg>
+    Open PDF
+    <input type="file" id="file-input" accept=".pdf" style="display:none">
+  </label>
+
+  <label class="toggle-row">
+    <input type="checkbox" id="include-refs"> Include References
+  </label>
+
+  <button class="btn" id="btn-books" title="Read current Books page aloud">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M1 2.828c.885-.37 2.154-.769 3.388-.893 1.33-.134 2.458.063 3.112.752v9.746c-.935-.53-2.12-.603-3.213-.493-1.18.12-2.37.461-3.287.811V2.828zm7.5-.141c.654-.689 1.782-.886 3.112-.752 1.234.124 2.503.523 3.388.893v9.746c-.917-.35-2.107-.692-3.287-.81-1.094-.111-2.278-.039-3.213.492V2.687zM8 1.783C7.015.936 5.587.81 4.287.94c-1.514.153-3.042.672-3.994 1.105A.5.5 0 0 0 0 2.5v11a.5.5 0 0 0 .707.455c.882-.4 2.303-.881 3.68-1.02 1.409-.142 2.59.087 3.223.877a.5.5 0 0 0 .78 0c.633-.79 1.814-1.019 3.222-.877 1.378.139 2.8.62 3.681 1.02A.5.5 0 0 0 16 13.5v-11a.5.5 0 0 0-.293-.455c-.952-.433-2.48-.952-3.994-1.105C10.413.809 8.985.936 8 1.783z"/>
+    </svg>
+    Read Books
+  </button>
+
+  <span class="file-name" id="file-name">No file loaded</span>
+
+  <span class="header-sep"></span>
+
+  <span id="status-dot" title="TTS server status"></span>
+  <span id="status-label" style="font-size:12px;color:var(--muted)">checking server…</span>
+
+  <button class="wc-pin pinned" id="btn-pin" title="Toggle always on top">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a5.927 5.927 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707-.195-.195.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a5.922 5.922 0 0 1 1.013.16l3.134-3.133a2.772 2.772 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146z"/>
+    </svg>
+  </button>
+</header>
+
+<!-- ── Main ── -->
+<div class="main">
+
+  <!-- Sidebar -->
+  <aside>
+    <div class="sidebar-tabs">
+      <button class="tab-btn active" data-tab="sections">Sections</button>
+      <button class="tab-btn"        data-tab="history">History</button>
+    </div>
+    <div id="section-list" class="tab-panel active">
+      <div style="padding:20px 14px;color:var(--muted);font-size:12px;">
+        Open a PDF to see sections
+      </div>
+    </div>
+    <div id="history-list" class="tab-panel">
+      <div id="history-empty" style="padding:20px 14px;color:var(--muted);font-size:12px;">
+        No documents loaded yet
+      </div>
+    </div>
+  </aside>
+
+  <!-- Reader -->
+  <div id="reader">
+    <div class="empty-state" id="empty-state">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+      <p>Open a scientific PDF to begin</p>
+      <small>Citations stripped &bull; Math cleaned &bull; Abbreviations expanded</small>
+    </div>
+    <div id="chunks-container"></div>
+  </div>
+
+</div>
+
+<!-- ── Player ── -->
+<div id="player">
+
+  <button class="ctrl-btn" id="btn-prev" title="Previous paragraph" disabled>
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M3.5 3.5a.5.5 0 0 1 .5.5v3.793l8.146-4.573A.5.5 0 0 1 13 3.5v9a.5.5 0 0 1-.854.359L4 8.207V12a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5-.5z"/>
+    </svg>
+  </button>
+
+  <button class="ctrl-btn" id="btn-play-pause" title="Play / Pause" disabled>
+    <svg id="icon-play" width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M11.596 8.697L4.5 12.5V3.5l7.096 5.197z"/>
+    </svg>
+    <svg id="icon-pause" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" style="display:none">
+      <path d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5zm5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5z"/>
+    </svg>
+  </button>
+
+  <button class="ctrl-btn" id="btn-stop" title="Stop &amp; clear generation queue" disabled>
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <rect x="3" y="3" width="10" height="10" rx="1"/>
+    </svg>
+  </button>
+
+  <button class="ctrl-btn" id="btn-next" title="Next paragraph" disabled>
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M12.5 3.5a.5.5 0 0 0-.5.5v3.793L3.854 3.22A.5.5 0 0 0 3 3.578v9a.5.5 0 0 0 .854.359L11 8.207V12a.5.5 0 0 0 1 0V4a.5.5 0 0 0-.5-.5z"/>
+    </svg>
+  </button>
+
+  <div class="progress-wrap">
+    <div class="progress-track" id="progress-track">
+      <div id="chunk-progress"></div>
+      <div id="progress-fill" style="width:0%"></div>
+    </div>
+    <div class="progress-info">
+      <span id="progress-label">—</span>
+      <span id="section-label" style="color:var(--muted);font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+    </div>
+  </div>
+
+  <div class="loading-spinner" id="spinner"></div>
+
+  <span class="rtf-indicator" id="rtf-indicator" title="Real-time factor — seconds of audio generated per second of compute. >1× means faster than real-time.">—</span>
+
+  <span class="player-label">Voice</span>
+  <select class="player-select" id="voice-select" style="width:148px;">
+    <option value="casual_male">casual_male</option>
+    <option value="casual_female">casual_female</option>
+    <option value="cheerful_female">cheerful_female</option>
+    <option value="neutral_male">neutral_male</option>
+    <option value="neutral_female">neutral_female</option>
+    <option value="fr_male">fr_male</option>
+    <option value="fr_female">fr_female</option>
+    <option value="es_male">es_male</option>
+    <option value="es_female">es_female</option>
+    <option value="de_male">de_male</option>
+    <option value="de_female">de_female</option>
+    <option value="it_male">it_male</option>
+    <option value="it_female">it_female</option>
+    <option value="pt_male">pt_male</option>
+    <option value="pt_female">pt_female</option>
+    <option value="nl_male">nl_male</option>
+    <option value="nl_female">nl_female</option>
+    <option value="ar_male">ar_male</option>
+    <option value="hi_male">hi_male</option>
+    <option value="hi_female">hi_female</option>
+  </select>
+
+  <span class="player-label">Speed</span>
+  <select class="player-select" id="speed-select">
+    <option value="0.75">0.75×</option>
+    <option value="1" selected>1×</option>
+    <option value="1.25">1.25×</option>
+    <option value="1.5">1.5×</option>
+    <option value="1.75">1.75×</option>
+    <option value="2">2×</option>
+  </select>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Player engine
+// ─────────────────────────────────────────────────────────────────────────────
+class Player {
+  constructor() {
+    this.audio    = new Audio();
+    this.docId    = null;
+    this.chunks   = [];
+    this.idx      = 0;
+    this.playing  = false;
+    this.voice    = 'casual_male';
+    this.speed    = 1.0;
+    this._cache       = new Map();   // idx -> Promise<string|null>
+    this._controllers = new Map();   // idx -> AbortController
+    this._genTimes    = new Map();   // idx -> generation ms
+    this._rtfWindow   = [];          // rolling RTF samples (last 5)
+    // Bumped on every action that supersedes a pending _playIdx (load, next,
+    // prev, seekTo, stop, setVoice). An in-flight _playIdx captures the gen
+    // at entry and bails out after its await if the gen has changed — this
+    // is what guarantees strict 0→1→2 playback ordering across user actions.
+    this._playGen     = 0;
+    // Audio elements fire 'error' when src is cleared. We use this flag to
+    // distinguish those from real decode failures so we don't treat them as
+    // a reason to skip ahead a chunk.
+    this._clearingSrc = false;
+
+    this.audio.addEventListener('ended',      () => this._onEnded());
+    this.audio.addEventListener('error',      () => this._onError());
+    this.audio.addEventListener('waiting',    () => this.onLoading(true));
+    this.audio.addEventListener('playing',    () => this.onLoading(false));
+    this.audio.addEventListener('timeupdate', () => {
+      this.onTimeUpdate(this.audio.currentTime, this.audio.duration || 0);
+    });
+    this.audio.addEventListener('loadedmetadata', () => {
+      const dur   = this.audio.duration;
+      const genMs = this._genTimes.get(this.idx);
+      if (dur > 0 && genMs > 0) {
+        const rtf = dur / (genMs / 1000);
+        this._rtfWindow.push(rtf);
+        if (this._rtfWindow.length > 5) this._rtfWindow.shift();
+        const avg = this._rtfWindow.reduce((a, b) => a + b, 0) / this._rtfWindow.length;
+        this.onSpeedUpdate(avg, genMs);
+      }
+    });
+  }
+
+  // Reset the <audio> element without firing a spurious 'error' event.
+  _clearAudio() {
+    this._clearingSrc = true;
+    this.audio.pause();
+    this.audio.removeAttribute('src');
+    this.audio.load();
+    this._clearingSrc = false;
+  }
+
+  load(docId, chunks) {
+    this._playGen++;
+    this._clearAudio();
+    this.docId   = docId;
+    this.chunks  = chunks;
+    this.idx     = 0;
+    this.playing = false;
+    this._clearCache();
+    this._fetchChunk(0);   // starts the sequential chain 0 → 1 → 2 → …
+    this.onChunkChange(0);
+    this.onStateChange();
+  }
+
+  async play() {
+    this.playing = true;
+    await this._playIdx(this.idx);
+  }
+
+  pause() {
+    this.playing = false;
+    this.audio.pause();
+    this.onStateChange();
+  }
+
+  resume() {
+    this.playing = true;
+    this.audio.playbackRate = this.speed;
+    this.audio.play().catch(() => this._playIdx(this.idx));
+    this.onStateChange();
+  }
+
+  async next() {
+    if (this.idx >= this.chunks.length - 1) return;
+    this._playGen++;
+    this.audio.pause();
+    this.idx++;
+    if (this.playing) {
+      await this._playIdx(this.idx);
+    } else {
+      this._ensureChain(this.idx);
+      this.onChunkChange(this.idx);
+    }
+  }
+
+  async prev() {
+    if (this.idx <= 0) return;
+    this._playGen++;
+    this.audio.pause();
+    this.idx--;
+    if (this.playing) {
+      await this._playIdx(this.idx);
+    } else {
+      this._ensureChain(this.idx);
+      this.onChunkChange(this.idx);
+    }
+  }
+
+  async seekTo(idx) {
+    this._playGen++;
+    const was = this.playing;
+    this._clearAudio();
+    this.idx = idx;
+    if (was) {
+      this.playing = true;
+      await this._playIdx(idx);
+    } else {
+      this._ensureChain(idx);
+      this.onChunkChange(idx);
+    }
+  }
+
+  // Ensure the sequential chain is seeded from idx if it isn't already running.
+  _ensureChain(idx) {
+    if (!this._cache.has(idx)) this._fetchChunk(idx);
+  }
+
+  setVoice(v) {
+    this.voice = v;
+    this._playGen++;
+    // Drop cached URLs for the old voice but DON'T revoke the URL the audio
+    // element is currently playing — that would cut the chunk off mid-word
+    // and trip _onError into skipping ahead.
+    const playingSrc = this.audio.src;
+    this._cache.forEach(async p => {
+      const u = await p;
+      if (u && u !== playingSrc) URL.revokeObjectURL(u);
+    });
+    this._cache.clear();
+  }
+  setSpeed(s) { this.speed = s; this.audio.playbackRate = s; }
+
+  // ── internals ──
+
+  async _playIdx(idx) {
+    // Capture the gen at entry. If anything supersedes us during the await
+    // below (a next/prev/seek/stop/load), this snapshot lets us bail before
+    // we clobber audio.src with stale playback. This is what enforces
+    // strict 0 → 1 → 2 ordering: a concurrent _playIdx(2) bumps _playGen,
+    // and the older _playIdx(1) sees the mismatch and exits.
+    const myGen = this._playGen;
+
+    if (idx >= this.chunks.length) {
+      this.playing = false;
+      this.onPlaybackComplete();
+      return;
+    }
+
+    const text = (this.chunks[idx].text || '').trim();
+    if (!text || text.length < 5) {
+      if (this.playing && myGen === this._playGen) {
+        this.idx = idx + 1;
+        await this._playIdx(idx + 1);
+      }
+      return;
+    }
+
+    this.idx = idx;
+    this.onChunkChange(idx);
+
+    this.onLoading(true);
+    let url = await this._fetchChunk(idx);
+    this.onLoading(false);
+
+    if (myGen !== this._playGen || !this.playing) return;
+
+    // Chunk idx is confirmed ready — pre-warm the next two while this one
+    // plays. _fetchChunk dedupes via cache, so this is safe to call repeatedly.
+    for (let n = 1; n <= 2; n++) {
+      if (idx + n < this.chunks.length) this._fetchChunk(idx + n);
+    }
+
+    if (!url) url = this._silenceUrl(0.3);
+
+    this.audio.src = url;
+    this.audio.playbackRate = this.speed;
+    try {
+      await this.audio.play();
+      this.onStateChange();
+    } catch {
+      this.playing = false;
+      this.onStateChange();
+    }
+  }
+
+  _fetchChunk(idx) {
+    if (this._cache.has(idx)) return this._cache.get(idx);
+    const ctrl = new AbortController();
+    this._controllers.set(idx, ctrl);
+    const p = this._fetchWithRetry(idx, ctrl.signal)
+      .then(url => {
+        if (url) this.onChunkCached(idx);
+        this._controllers.delete(idx);
+        return url;
+      })
+      .catch(() => { this._controllers.delete(idx); return null; });
+    this._cache.set(idx, p);
+    return p;
+  }
+
+  async _fetchWithRetry(idx, signal, maxRetries = 3) {
+    const url = `/audio/${this.docId}/${idx}?voice=${encodeURIComponent(this.voice)}`;
+    const t0  = performance.now();
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const r = await fetch(url, { signal });
+        if (r.ok) {
+          const b = await r.blob();
+          this._genTimes.set(idx, performance.now() - t0);
+          return URL.createObjectURL(b);
+        }
+        // Server error — wait before retry (not on last attempt)
+        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+      } catch (e) {
+        if (e.name === 'AbortError') return null;  // intentional stop — don't retry
+        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+      }
+    }
+    return null;  // all retries exhausted — player will skip this chunk
+  }
+
+  stop() {
+    this._playGen++;
+    this.playing = false;
+    this._clearAudio();
+    this._controllers.forEach(ctrl => ctrl.abort());
+    this._controllers.clear();
+    this._clearCache();
+    this.onStateChange();
+  }
+
+  _silenceUrl(seconds = 0.3) {
+    const sr = 24000, n = Math.floor(sr * seconds);
+    const buf = new ArrayBuffer(44 + n * 2);
+    const v = new DataView(buf);
+    const s = (o, str) => [...str].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    s(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); s(8, 'WAVE');
+    s(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    s(36, 'data'); v.setUint32(40, n * 2, true);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+
+  _clearCache() {
+    this._cache.forEach(async p => { const u = await p; if (u) URL.revokeObjectURL(u); });
+    this._cache.clear();
+  }
+
+  async _onEnded() {
+    if (this.playing) { this.idx++; await this._playIdx(this.idx); }
+  }
+  async _onError() {
+    // Clearing audio.src dispatches an 'error' event — ignore those so we
+    // don't mistake them for a decode failure and skip a chunk.
+    if (this._clearingSrc) return;
+    if (!this.audio.src) return;
+    if (this.playing) { this.idx++; await this._playIdx(this.idx); }
+  }
+
+  // Callbacks (overridden by UI)
+  onChunkChange(idx)             {}
+  onStateChange()                {}
+  onTimeUpdate(cur, dur)         {}
+  onLoading(flag)                {}
+  onPlaybackComplete()           {}
+  onChunkCached(idx)             {}
+  onSpeedUpdate(rtf, genMs)      {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI
+// ─────────────────────────────────────────────────────────────────────────────
+const player = new Player();
+
+const $  = id => document.getElementById(id);
+const $$ = sel => document.querySelectorAll(sel);
+
+const btnPlay   = $('btn-play-pause');
+const btnStop   = $('btn-stop');
+const btnPrev   = $('btn-prev');
+const btnNext   = $('btn-next');
+const iconPlay  = $('icon-play');
+const iconPause = $('icon-pause');
+const spinner   = $('spinner');
+const progFill  = $('progress-fill');
+const chunkProg = $('chunk-progress');
+const progLabel = $('progress-label');
+const secLabel  = $('section-label');
+const sectionList  = $('section-list');
+const chunksWrap   = $('chunks-container');
+const emptyState   = $('empty-state');
+const voiceSelect  = $('voice-select');
+const speedSelect  = $('speed-select');
+const fileName     = $('file-name');
+const progTrack    = $('progress-track');
+
+let docData    = null;
+let chunkEls   = [];
+let loadingVisible = false;
+let docHistory = [];
+let booksMode  = false;
+
+async function pushHistory(entry) {
+  try {
+    await fetch('/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        doc_id:       entry.doc_id,
+        filename:     entry.filename,
+        timestamp:    entry.timestamp.toISOString(),
+        total_chunks: entry.total_chunks,
+        data:         entry.data,
+      }),
+    });
+  } catch {}
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch('/history');
+    const entries = await r.json();
+    docHistory = entries.map(e => ({
+      ...e,
+      timestamp: new Date(e.timestamp),
+      data: null,   // loaded lazily on first switch
+    }));
+    renderHistory();
+  } catch {}
+}
+
+// ── Sidebar tabs ──
+$$('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    $(`${btn.dataset.tab}-list`).classList.add('active');
+  });
+});
+
+// ── History ──
+function fmtTime(date) {
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+      date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderHistory() {
+  const empty = $('history-empty');
+  const list  = $('history-list');
+
+  // Remove all existing items (keep the empty notice)
+  list.querySelectorAll('.hist-item').forEach(el => el.remove());
+
+  if (docHistory.length === 0) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Newest first
+  [...docHistory].reverse().forEach(entry => {
+    const item = document.createElement('div');
+    item.className = 'hist-item' + (docData && docData.doc_id === entry.doc_id ? ' active-doc' : '');
+    item.dataset.docId = entry.doc_id;
+    item.innerHTML = `
+      <div class="hist-item-body">
+        <div class="hist-name" title="${entry.filename}">${entry.filename}</div>
+        <div class="hist-meta">${entry.total_chunks} paragraphs &bull; ${fmtTime(entry.timestamp)}</div>
+      </div>
+      <button class="hist-del" title="Remove">&#x2715;</button>`;
+
+    item.querySelector('.hist-item-body').addEventListener('click', () => {
+      switchDocument(entry);
+    });
+
+    item.querySelector('.hist-del').addEventListener('click', async e => {
+      e.stopPropagation();
+      await fetch(`/history/${entry.doc_id}`, { method: 'DELETE' });
+      docHistory = docHistory.filter(h => h.doc_id !== entry.doc_id);
+      if (docData && docData.doc_id === entry.doc_id) {
+        player.audio.pause();
+        docData = null;
+        chunksWrap.innerHTML = '';
+        sectionList.innerHTML = '<div style="padding:20px 14px;color:var(--muted);font-size:12px;">Open a PDF to see sections</div>';
+        emptyState.style.display = '';
+        btnPlay.disabled = btnPrev.disabled = btnNext.disabled = true;
+        fileName.textContent = 'No file loaded';
+      }
+      renderHistory();
+    });
+
+    list.appendChild(item);
+  });
+}
+
+async function switchDocument(entry) {
+  // Lazy-load full doc data if we only have metadata (loaded from history on startup)
+  if (!entry.data) {
+    showToast('Loading document…');
+    try {
+      const r = await fetch(`/history/${entry.doc_id}`);
+      if (!r.ok) throw new Error();
+      entry.data = await r.json();
+    } catch {
+      showToast('Could not load document data', 3000, true);
+      return;
+    }
+  }
+  await fetch('/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry.data),
+  });
+  docData = entry.data;
+  fileName.textContent = entry.filename;
+  renderDocument(entry.data);
+  $$('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'sections'));
+  $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'section-list'));
+  renderHistory();
+}
+
+// ── Server status ──
+async function checkServerStatus() {
+  try {
+    const r = await fetch('/health');
+    const j = await r.json();
+    const dot = $('status-dot');
+    const lbl = $('status-label');
+    dot.className   = j.vllm ? 'ok' : 'bad';
+    lbl.textContent = j.vllm ? 'vLLM ready' : 'vLLM offline';
+  } catch {
+    $('status-dot').className   = 'bad';
+    $('status-label').textContent = 'server error';
+  }
+}
+setInterval(checkServerStatus, 15000);
+
+// ── Load voices ──
+async function loadVoices() {
+  try {
+    const r = await fetch('/voices');
+    const j = await r.json();
+    const voices = j.voices || [];
+    voiceSelect.innerHTML = voices
+      .map(v => `<option value="${v}"${v === 'casual_male' ? ' selected' : ''}>${v}</option>`)
+      .join('');
+  } catch {}
+}
+loadVoices();
+
+// ── File upload ──
+$('file-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const includeRefs = $('include-refs').checked;
+  fileName.textContent = 'Loading…';
+
+  const form = new FormData();
+  form.append('file', file);
+
+  showToast('Processing PDF…');
+
+  try {
+    const r = await fetch(`/upload?include_refs=${includeRefs}`, { method: 'POST', body: form });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || 'Upload failed');
+    }
+    docData = await r.json();
+    booksMode = false;
+    $('btn-books').classList.remove('books-active');
+    fileName.textContent = file.name;
+    renderDocument(docData);
+    const entry = {
+      doc_id:       docData.doc_id,
+      filename:     file.name,
+      timestamp:    new Date(),
+      total_chunks: docData.total_chunks,
+      data:         docData,
+    };
+    docHistory.push(entry);
+    pushHistory(entry);   // fire-and-forget persist to disk
+    renderHistory();
+    showToast(`Loaded ${docData.total_chunks} paragraphs`, 2500);
+  } catch (err) {
+    showToast(err.message, 4000, true);
+    fileName.textContent = 'Load failed';
+  }
+
+  e.target.value = '';
+});
+
+function renderDocument(data) {
+  emptyState.style.display = 'none';
+  chunksWrap.innerHTML     = '';
+  sectionList.innerHTML    = '';
+  chunkEls = [];
+
+  let lastSection = null;
+
+  data.chunks.forEach((chunk, i) => {
+    if (chunk.section !== lastSection) {
+      lastSection = chunk.section;
+      const hdr = document.createElement('div');
+      hdr.className   = 'section-header';
+      hdr.textContent = chunk.section;
+      hdr.dataset.section = chunk.section;
+      chunksWrap.appendChild(hdr);
+    }
+
+    const el = document.createElement('div');
+    el.className    = 'chunk';
+    el.textContent  = chunk.text;
+    el.dataset.idx  = i;
+    el.addEventListener('click', () => player.seekTo(i));
+    chunksWrap.appendChild(el);
+    chunkEls.push(el);
+  });
+
+  data.sections.forEach(sec => {
+    const item = document.createElement('div');
+    item.className   = 'section-item';
+    item.textContent = sec.name;
+    item.dataset.chunkIdx = sec.chunk_idx;
+    item.addEventListener('click', () => player.seekTo(sec.chunk_idx));
+    sectionList.appendChild(item);
+  });
+
+  player.load(data.doc_id, data.chunks);
+  btnPlay.disabled = false;
+  btnStop.disabled = false;
+  btnPrev.disabled = false;
+  btnNext.disabled = false;
+  updateProgress(0, data.total_chunks);
+}
+
+// ── Player callbacks ──
+player.onChunkCached = idx => {
+  if (chunkEls[idx]) chunkEls[idx].classList.add('cached');
+};
+
+player.onChunkChange = idx => {
+  chunkEls.forEach((el, i) => {
+    el.classList.toggle('active',  i === idx && !player.playing);
+    el.classList.toggle('playing', i === idx &&  player.playing);
+  });
+
+  if (chunkEls[idx]) {
+    chunkEls[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  updateProgress(idx, player.chunks.length);
+  updateSectionHighlight(idx);
+
+  // Books mode: push highlight to the transparent overlay window
+  if (booksMode) {
+    fetch(`/books/highlight/${idx}`, { method: 'POST' }).catch(() => {});
+  }
+};
+
+player.onStateChange = () => {
+  const p = player.playing;
+  iconPlay.style.display  = p ? 'none' : '';
+  iconPause.style.display = p ? '' : 'none';
+
+  // Re-apply playing vs active class
+  chunkEls.forEach((el, i) => {
+    el.classList.toggle('active',  i === player.idx && !p);
+    el.classList.toggle('playing', i === player.idx &&  p);
+  });
+};
+
+player.onLoading = flag => {
+  loadingVisible = flag;
+  spinner.classList.toggle('visible', flag);
+};
+
+player.onTimeUpdate = (cur, dur) => {
+  if (!dur) return;
+  const pct = (cur / dur) * 100;
+  chunkProg.style.width = pct + '%';
+};
+
+player.onSpeedUpdate = (rtf, genMs) => {
+  const el = $('rtf-indicator');
+  el.textContent = rtf.toFixed(1) + '× RT';
+  el.title = `Real-time factor: ${rtf.toFixed(2)}× (generated in ${(genMs/1000).toFixed(1)}s)`;
+  el.className = 'rtf-indicator ' + (rtf >= 2 ? 'fast' : rtf >= 1 ? 'ok' : 'slow');
+};
+
+player.onPlaybackComplete = () => {
+  player.onStateChange();
+  if (booksMode) {
+    _booksNextPage();
+  } else {
+    showToast('Finished reading', 2500);
+  }
+};
+
+// ── Controls ──
+btnPlay.addEventListener('click', () => {
+  if (!docData) return;
+  player.playing ? player.pause() : (player.audio.paused && player.audio.src ? player.resume() : player.play());
+});
+
+btnStop.addEventListener('click', () => {
+  player.stop();
+  chunkEls.forEach(el => el.classList.remove('cached'));
+  showToast('Generation stopped', 2000);
+});
+btnPrev.addEventListener('click', () => player.prev());
+btnNext.addEventListener('click', () => player.next());
+
+voiceSelect.addEventListener('change', () => {
+  player.setVoice(voiceSelect.value);
+  chunkEls.forEach(el => el.classList.remove('cached'));
+});
+speedSelect.addEventListener('change', () => { player.setSpeed(parseFloat(speedSelect.value)); });
+
+// ── Progress bar click to seek ──
+progTrack.addEventListener('click', e => {
+  if (!docData || !player.chunks.length) return;
+  const rect = progTrack.getBoundingClientRect();
+  const pct  = (e.clientX - rect.left) / rect.width;
+  const idx  = Math.round(pct * (player.chunks.length - 1));
+  player.seekTo(Math.max(0, Math.min(idx, player.chunks.length - 1)));
+});
+
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', e => {
+  if (!docData) return;
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); btnPlay.click(); }
+  if (e.code === 'ArrowRight') player.next();
+  if (e.code === 'ArrowLeft')  player.prev();
+});
+
+// ── Helpers ──
+function updateProgress(idx, total) {
+  const pct = total > 1 ? (idx / (total - 1)) * 100 : 0;
+  progFill.style.width = pct + '%';
+  progLabel.textContent = total ? `${idx + 1} / ${total}` : '—';
+
+  if (player.chunks[idx]) {
+    secLabel.textContent = player.chunks[idx].section || '';
+  }
+}
+
+function updateSectionHighlight(chunkIdx) {
+  $$('.section-item').forEach(item => {
+    const ci = parseInt(item.dataset.chunkIdx, 10);
+    item.classList.remove('active');
+    if (ci <= chunkIdx) item._lastMatch = ci;
+  });
+
+  let best = null, bestCi = -1;
+  $$('.section-item').forEach(item => {
+    const ci = parseInt(item.dataset.chunkIdx, 10);
+    if (ci <= chunkIdx && ci > bestCi) { bestCi = ci; best = item; }
+  });
+  if (best) best.classList.add('active');
+}
+
+// ── Init ──
+loadHistory();
+checkServerStatus();
+
+let toastTimer = null;
+function showToast(msg, dur = 3000, isErr = false) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className   = 'show' + (isErr ? ' error' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ''; }, dur);
+}
+
+// ── Books mode ───────────────────────────────────────────────────────────────
+
+async function _loadBooksPage() {
+  const r = await fetch('/books/capture', { method: 'POST' });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(err.detail || 'Could not capture Books page');
+  }
+  return r.json();
+}
+
+async function _startBooksMode() {
+  $('btn-books').classList.add('books-active');
+  showToast('Capturing Books page\u2026');
+  try {
+    const data = await _loadBooksPage();
+    docData   = data;
+    booksMode = true;
+    fileName.textContent = data.page_title ? `\u{1F4D6} ${data.page_title}` : 'Books \u2014 current page';
+    renderDocument(data);
+    // Switch sidebar to sections tab
+    $$('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'sections'));
+    $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'section-list'));
+    player.play();
+    showToast(`Reading ${data.total_chunks} paragraph${data.total_chunks === 1 ? '' : 's'}`, 2000);
+  } catch (err) {
+    $('btn-books').classList.remove('books-active');
+    booksMode = false;
+    showToast(err.message, 4000, true);
+  }
+}
+
+async function _booksNextPage() {
+  showToast('Turning page\u2026', 1200);
+  try {
+    await fetch('/books/next_page', { method: 'POST' });
+    // Brief pause for the Books page animation
+    await new Promise(r => setTimeout(r, 900));
+    const data = await _loadBooksPage();
+    docData = data;
+    if (data.page_title) fileName.textContent = `\u{1F4D6} ${data.page_title}`;
+    renderDocument(data);
+    player.play();
+    showToast('Next page', 1200);
+  } catch (err) {
+    booksMode = false;
+    $('btn-books').classList.remove('books-active');
+    showToast('Could not load next page \u2014 stopping', 3500, true);
+  }
+}
+
+$('btn-books').addEventListener('click', () => {
+  if (booksMode) {
+    // Stop books mode
+    booksMode = false;
+    $('btn-books').classList.remove('books-active');
+    player.stop();
+    fetch('/books/next_page', { method: 'POST' }).catch(() => {});  // clears highlights
+    showToast('Books mode stopped', 2000);
+  } else {
+    _startBooksMode();
+  }
+});
+
+// ── Overlay window controls (pywebview) ──────────────────────────────────────
+function _api() {
+  return (typeof window !== 'undefined' && window.pywebview?.api) || null;
+}
+
+$('btn-wc-close').addEventListener('click', () => {
+  _api()?.close();
+});
+
+$('btn-wc-minimize').addEventListener('click', () => {
+  _api()?.minimize();
+});
+
+// Pin button — toggle always-on-top
+let _pinned = true;
+$('btn-pin').addEventListener('click', () => {
+  _pinned = !_pinned;
+  $('btn-pin').classList.toggle('pinned', _pinned);
+  $('btn-pin').title = _pinned ? 'Unpin (disable always on top)' : 'Pin (always on top)';
+  _api()?.set_on_top(_pinned);
+});
+</script>
+</body>
+</html>
