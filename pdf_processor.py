@@ -14,8 +14,14 @@ _CITE_PAREN = re.compile(
     r'\((?:[A-Z][a-z]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-z]+|and\s+[A-Z][a-z]+))?,?\s*\d{4}[a-z]?'
     r'(?:,\s*p(?:p)?\.\s*\d+[-–]\d+)?(?:;\s*)?)+\)'
 )
-# Superscript-style number citations at end of words: word1,2 or word1
-_CITE_SUPER = re.compile(r'(?<=[a-z.,])(\d{1,2})(?=[\s,.])')
+# Superscript citation / footnote markers that text extraction glues onto the
+# preceding word: "shown1,2 the", "results.12 We". Require at least three
+# lowercase letters before the digits (optionally followed by . , ;) so that
+# decimals ("0.01", "93.25"), versions ("Python 3.12") and symbols ("x2",
+# "mp3", "H2O") are left alone.
+_CITE_SUPER = re.compile(
+    r'(?:(?<=[a-z]{3})|(?<=[a-z]{3}[.,;]))\d{1,2}(?:,\d{1,2})*(?=[\s,.;:)]|$)'
+)
 
 # ── Math ──────────────────────────────────────────────────────────────────────
 _MATH_ENV = re.compile(
@@ -41,7 +47,6 @@ _EMAIL = re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b')
 _LINE_BREAK_HYPHEN = re.compile(r'(\w{2,})[‐‑‒–\-]\n(\w{2,})')
 _STANDALONE_NUMBER = re.compile(r'^\s*\d+\s*$', re.MULTILINE)
 _NOISE_LINE = re.compile(r'^\s*[^A-Za-z\n]{0,6}\s*$', re.MULTILINE)
-_FOOTNOTE_SUPER = re.compile(r'(?<=[a-z.,;])\d{1,2}(?=[\s,.])')
 
 # ── Abbreviation expansions (order matters — longer patterns first) ────────────
 _ABBREVS: List[Tuple[re.Pattern, str]] = [
@@ -71,11 +76,12 @@ _ABBREVS: List[Tuple[re.Pattern, str]] = [
 ]
 
 # ── Section heading detection ─────────────────────────────────────────────────
+# Single line only ([ \t], not \s, so a match can't run into the next line).
 _SECTION_NUMBERED = re.compile(
-    r'^(?:\d+\.)*\d+\.?\s+([A-Z][A-Za-z0-9\s\-:]{2,60})$', re.MULTILINE
+    r'^(?:\d{1,2}\.)*\d{1,2}\.?[ \t]+([A-Z][A-Za-z0-9 \t\-:,&/]{1,60})$', re.MULTILINE
 )
 _SECTION_ROMAN = re.compile(
-    r'^[IVX]+\.\s+([A-Z][A-Za-z\s\-:]{2,60})$', re.MULTILINE
+    r'^[IVX]{1,5}\.[ \t]+([A-Z][A-Za-z \t\-:,&/]{1,60})$', re.MULTILINE
 )
 _SECTION_ALLCAPS = re.compile(
     r'^(ABSTRACT|INTRODUCTION|RELATED WORK|BACKGROUND|METHODS?|METHODOLOGY'
@@ -85,6 +91,42 @@ _SECTION_ALLCAPS = re.compile(
     re.MULTILINE,
 )
 _SECTION_HEADING_PREFIX = re.compile(r'^(?:\d+\.)*\d*\.?\s*|^[IVX]+\.\s*')
+
+# Words that end sentences far more often than headings, and auxiliaries that
+# show up in body text ("3 Patients were excluded due to") but rarely in titles.
+_HEADING_BAD_LAST = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "by", "for",
+    "from", "with", "as", "that", "which", "due", "than", "is", "are", "was", "were",
+}
+_HEADING_AUX = {"is", "are", "was", "were", "be", "been", "has", "have", "had"}
+_HEADING_MINOR = {"a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "by", "for", "from", "with", "vs"}
+
+# Anything worth sending to TTS has at least two letters/digits in a row
+# ("Yes.", "No.", "OK"); punctuation crumbs like "—" or "(a)" don't.
+_SPEAKABLE = re.compile(r'[^\W_]{2,}')
+
+
+def is_speakable(text: str) -> bool:
+    return bool(_SPEAKABLE.search(text or ""))
+
+
+def _looks_like_heading(title: str) -> bool:
+    """Filter numbered/roman "headings" that are really wrapped body lines."""
+    title = title.strip()
+    words = title.split()
+    if not 1 <= len(words) <= 8 or title[-1] in ",;":
+        return False
+    lower = [w.lower().strip(",:;") for w in words]
+    if lower[-1] in _HEADING_BAD_LAST:
+        return False
+    if any(w in _HEADING_AUX for w, orig in zip(lower, words) if orig[:1].islower()):
+        return False
+    if len(words) > 4:
+        # Long headings are Title Case; long sentence-case lines are body text.
+        major = [w for w, l in zip(words, lower) if l not in _HEADING_MINOR]
+        if sum(w[:1].isupper() for w in major) * 2 < len(major):
+            return False
+    return True
 
 # References section boundary
 _REFS_BOUNDARY = re.compile(
@@ -171,8 +213,12 @@ def _extract_raw(path: str) -> str:
 
 
 def _separate_references(text: str) -> Tuple[str, str]:
-    m = _REFS_BOUNDARY.search(text)
-    if m:
+    # The real references heading is the last one, near the end of the text.
+    # A "References" line near the start is a table-of-contents entry; treating
+    # it as the boundary would throw away the whole document.
+    matches = list(_REFS_BOUNDARY.finditer(text))
+    if matches and matches[-1].start() >= len(text) * 0.2:
+        m = matches[-1]
         return text[: m.start()], text[m.start() :]
     return text, ""
 
@@ -202,9 +248,6 @@ def _clean(text: str) -> str:
     text = _DOI.sub('', text)
     text = _EMAIL.sub('', text)
 
-    # Footnote superscripts
-    text = _FOOTNOTE_SUPER.sub('', text)
-
     # Expand abbreviations
     for pat, repl in _ABBREVS:
         text = pat.sub(repl, text)
@@ -227,6 +270,8 @@ def _detect_sections(text: str) -> List[Tuple[int, str]]:
     found: Dict[int, str] = {}
     for pattern in (_SECTION_NUMBERED, _SECTION_ROMAN, _SECTION_ALLCAPS):
         for m in pattern.finditer(text):
+            if pattern is not _SECTION_ALLCAPS and not _looks_like_heading(m.group(1)):
+                continue
             pos = m.start()
             name = _SECTION_HEADING_PREFIX.sub('', m.group(0).strip()).strip()
             if name and pos not in found:
@@ -274,7 +319,7 @@ def _split_chunks(text: str, max_chars: int = 160) -> List[str]:
     if bucket:
         chunks.append(' '.join(bucket))
 
-    return [c for c in chunks if len(c.strip()) > 10]
+    return [c for c in chunks if is_speakable(c)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

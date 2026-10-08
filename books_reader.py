@@ -8,6 +8,7 @@ Requires (System Settings > Privacy & Security):
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Any
 
@@ -226,7 +227,8 @@ def lines_to_chunks(lines: list[dict], max_chars: int = 160) -> list[dict]:
             'index':        len(chunks),
         })
 
-    return [c for c in chunks if len(c['text'].strip()) > 4]
+    # Keep short sentences ("Yes.") but drop punctuation-only crumbs.
+    return [c for c in chunks if re.search(r'[^\W_]{2,}', c['text'])]
 
 
 # ── Page turn ─────────────────────────────────────────────────────────────────

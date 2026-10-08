@@ -10,7 +10,7 @@ import httpx
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, Response
 
-from pdf_processor import process_pdf
+from pdf_processor import is_speakable, process_pdf
 import books_reader
 
 app = FastAPI(title="Voxtral Reader")
@@ -134,7 +134,7 @@ async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOIC
     if chunk_idx >= len(doc["chunks"]):
         raise HTTPException(404, "Chunk index out of range")
     text = doc["chunks"][chunk_idx]["text"].strip()
-    if not text or len(text) < 5:
+    if not is_speakable(text):
         return Response(content=_silence_wav(), media_type="audio/wav")
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:

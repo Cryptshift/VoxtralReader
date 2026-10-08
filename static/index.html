@@ -854,8 +854,10 @@ class Player {
       return;
     }
 
+    // Same rule as the server's is_speakable(): skip punctuation-only crumbs
+    // but keep short sentences like "Yes." or "No.".
     const text = (this.chunks[idx].text || '').trim();
-    if (!text || text.length < 5) {
+    if (!/[\p{L}\p{N}]{2}/u.test(text)) {
       if (this.playing && myGen === this._playGen) {
         this.idx = idx + 1;
         await this._playIdx(idx + 1);
