@@ -13,7 +13,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "HIST_FILE", tmp_path / "history.json")
     monkeypatch.setattr(app_module, "DOCS_DIR", tmp_path / "docs")
     # Nothing listens on the discard port: TTS calls fail fast with 503.
-    monkeypatch.setattr(app_module, "VLLM_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(app_module, "TTS_URL", "http://127.0.0.1:9")
     app_module.documents.clear()
     return tmp_path
 

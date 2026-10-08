@@ -1,56 +1,105 @@
 #!/usr/bin/env bash
-set -e
+# Start the mlx-audio TTS server (unless one is already running) and the
+# Voxtral Reader web app, both on 127.0.0.1. Ctrl+C stops the app and the
+# TTS server this script started.
+set -euo pipefail
 
-MODEL="mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
-TTS_PORT=8000
-APP_PORT=7860
-# Number of parallel HTTP workers — each can handle a TTS request simultaneously.
-# On M4 Max: 4 lets the 5-chunk prefetch window fill faster.
-# Lower to 2 if you see memory pressure (model is ~8 GB).
-WORKERS=8
+cd "$(dirname "$0")"
+
+MODEL="${TTS_MODEL:-mlx-community/Voxtral-4B-TTS-2603-mlx-bf16}"
+TTS_PORT="${TTS_PORT:-8000}"
+APP_PORT="${APP_PORT:-7860}"
+PYTHON="${PYTHON:-python}"
+TTS_URL="http://127.0.0.1:${TTS_PORT}"
+APP_URL="http://127.0.0.1:${APP_PORT}"
+TTS_LOG="logs/tts.log"
 
 echo ""
 echo "  ▶ Voxtral Reader"
 echo "  ─────────────────────────────────────────"
 
-# Kill any leftover app process
-lsof -ti:${APP_PORT} | xargs kill -9 2>/dev/null || true
+# Who is listening on a port, e.g. "Python (pid 123)"; empty if nobody.
+port_owner() {
+  lsof +c 0 -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null \
+    | awk 'NR > 1 { print $1 " (pid " $2 ")" }' | sort -u | paste -sd, - || true
+}
+
+# ── App port ──────────────────────────────────────────────────────────────────
+owner="$(port_owner "$APP_PORT")"
+if [[ -n "$owner" ]]; then
+  if curl -sf "${APP_URL}/health" 2>/dev/null | grep -q '"app"'; then
+    echo "  ✓ Voxtral Reader is already running → ${APP_URL}"
+    exit 0
+  fi
+  echo "  ✗ Port ${APP_PORT} is already in use by: ${owner}"
+  echo "    Stop that program, or use another port:  APP_PORT=7861 ./start.sh"
+  exit 1
+fi
 
 # ── TTS server ────────────────────────────────────────────────────────────────
-if curl -sf http://localhost:${TTS_PORT}/v1/models > /dev/null 2>&1; then
+TTS_PID=""
+WARM_PID=""
+cleanup() {
+  if [[ -n "$WARM_PID" ]]; then kill "$WARM_PID" 2>/dev/null || true; fi
+  if [[ -n "$TTS_PID" ]] && kill -0 "$TTS_PID" 2>/dev/null; then
+    echo ""
+    echo "  → Stopping the TTS server (pid ${TTS_PID})"
+    kill "$TTS_PID" 2>/dev/null || true
+    wait "$TTS_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+if curl -sf "${TTS_URL}/v1/models" > /dev/null 2>&1; then
   echo "  ✓ mlx-audio already running on :${TTS_PORT}"
 else
-  lsof -ti:${TTS_PORT} | xargs kill -9 2>/dev/null || true
-  echo "  → Starting mlx-audio  (${WORKERS} workers)"
-  echo "    ${MODEL}"
-  echo "    First run downloads ~8 GB — grab a coffee"
-  echo ""
+  owner="$(port_owner "$TTS_PORT")"
+  if [[ -n "$owner" ]]; then
+    echo "  ✗ Port ${TTS_PORT} is in use by ${owner}, which isn't an mlx-audio server."
+    echo "    Stop that program, or use another port:  TTS_PORT=8001 ./start.sh"
+    exit 1
+  fi
 
-  python -m mlx_audio.server \
-    --host 127.0.0.1 \
-    --port ${TTS_PORT} \
-    --workers ${WORKERS} &
+  mkdir -p logs
+  echo "  → Starting mlx-audio on :${TTS_PORT}  (log: ${TTS_LOG})"
+  "$PYTHON" -m mlx_audio.server --host 127.0.0.1 --port "$TTS_PORT" > "$TTS_LOG" 2>&1 &
+  TTS_PID=$!
 
   echo -n "  Waiting for TTS server"
-  for i in $(seq 1 90); do
-    curl -sf http://localhost:${TTS_PORT}/v1/models > /dev/null 2>&1 && { echo " ready."; break; }
+  ready=""
+  for _ in $(seq 1 90); do
+    if curl -sf "${TTS_URL}/v1/models" > /dev/null 2>&1; then ready=1; break; fi
+    if ! kill -0 "$TTS_PID" 2>/dev/null; then break; fi
     sleep 2; echo -n "."
-    [[ $i -eq 90 ]] && echo " timed out."
   done
+  if [[ -z "$ready" ]]; then
+    echo " failed."
+    echo "  ✗ The TTS server didn't start. Last lines of ${TTS_LOG}:"
+    tail -n 20 "$TTS_LOG" | sed 's/^/    /'
+    exit 1
+  fi
+  echo " ready."
 
-  # Warm up: load model weights into Metal GPU memory so first user request is instant
-  echo -n "  Warming up model"
-  curl -s -X POST http://localhost:${TTS_PORT}/v1/audio/speech \
-    -H "Content-Type: application/json" \
-    -d "{\"model\":\"${MODEL}\",\"input\":\"Ready.\",\"voice\":\"casual_male\",\"response_format\":\"wav\"}" \
-    -o /dev/null && echo " done." || echo " (warmup failed — continuing anyway)"
+  # Load the model weights in the background so the UI comes up right away.
+  # The first run downloads the model (~8 GB) from Hugging Face.
+  echo "  → Loading ${MODEL} in the background (first run downloads ~8 GB)"
+  (
+    curl -sf -X POST "${TTS_URL}/v1/audio/speech" --max-time 1800 \
+      -H "Content-Type: application/json" \
+      -d "{\"model\":\"${MODEL}\",\"input\":\"Ready.\",\"voice\":\"casual_male\",\"response_format\":\"wav\"}" \
+      -o /dev/null \
+      && echo "  ✓ Model loaded" \
+      || echo "  ! Model warm-up failed; see ${TTS_LOG}"
+  ) &
+  WARM_PID=$!
 fi
 
 # ── App server ────────────────────────────────────────────────────────────────
 echo ""
-echo "  → http://localhost:${APP_PORT}"
+echo "  → ${APP_URL}"
 echo "  Shortcuts: Space=play/pause  ←/→=paragraph  ■=stop generation"
 echo ""
 
-cd "$(dirname "$0")"
-uvicorn app:app --host 127.0.0.1 --port ${APP_PORT} --reload
+export TTS_URL TTS_MODEL="$MODEL"
+"$PYTHON" -m uvicorn app:app --host 127.0.0.1 --port "$APP_PORT" --log-level warning

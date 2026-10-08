@@ -61,7 +61,8 @@ _BOOKS_NOT_FOUND = (
     "Recording permission is granted in System Settings."
 )
 
-VLLM_URL     = os.getenv("VLLM_URL",     "http://localhost:8000")
+# mlx-audio server. VLLM_URL is the old name, still honoured.
+TTS_URL      = os.getenv("TTS_URL") or os.getenv("VLLM_URL") or "http://127.0.0.1:8000"
 TTS_MODEL    = os.getenv("TTS_MODEL",    "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16")
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "casual_male")
 
@@ -188,7 +189,7 @@ async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOIC
     if not is_speakable(text):
         return Response(content=_silence_wav(), media_type="audio/wav")
     try:
-        resp = await _client().post(f"{VLLM_URL}/v1/audio/speech", json={
+        resp = await _client().post(f"{TTS_URL}/v1/audio/speech", json={
             "input": text, "model": TTS_MODEL,
             "response_format": "wav", "voice": voice,
         })
@@ -438,7 +439,7 @@ async def books_next_page():
 @app.get("/voices")
 async def list_voices():
     try:
-        r = await _client().get(f"{VLLM_URL}/v1/audio/voices", timeout=5.0)
+        r = await _client().get(f"{TTS_URL}/v1/audio/voices", timeout=5.0)
         if r.status_code == 200:
             return r.json()
     except Exception:
@@ -449,7 +450,7 @@ async def list_voices():
 @app.get("/health")
 async def health():
     try:
-        r = await _client().get(f"{VLLM_URL}/v1/models", timeout=3.0)
+        r = await _client().get(f"{TTS_URL}/v1/models", timeout=3.0)
         vllm_ok = r.status_code == 200
     except Exception:
         vllm_ok = False
