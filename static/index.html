@@ -445,15 +445,11 @@
   .loading-spinner.visible { display: block; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Overlay: draggable header region ── */
-  header { -webkit-app-region: drag; }
-  /* Every interactive element inside the header must opt out */
-  header button, header label, header input,
-  header select, header a, header .btn,
-  header .toggle-row, header .file-name,
-  header #status-dot, header #status-label {
-    -webkit-app-region: no-drag;
-  }
+  /* Desktop window (run.py): pywebview moves the frameless window when you
+     drag an element with the pywebview-drag-region class (the header's
+     background, logo, file name and spacer; not its buttons). */
+  .in-webview .pywebview-drag-region { cursor: grab; }
+  .in-webview .pywebview-drag-region:active { cursor: grabbing; }
 
   /* ── Window controls (traffic lights) ── */
   .window-controls {
@@ -462,7 +458,6 @@
     align-items: center;
     margin-right: 6px;
     flex-shrink: 0;
-    -webkit-app-region: no-drag;
   }
   .wc-btn {
     width: 12px;
@@ -499,7 +494,6 @@
     justify-content: center;
     transition: color 0.12s, background 0.12s;
     flex-shrink: 0;
-    -webkit-app-region: no-drag;
   }
   .wc-pin:hover { color: var(--text); background: var(--surface2); }
   .wc-pin.pinned { color: var(--accent-br); }
@@ -541,13 +535,13 @@
 <body>
 
 <!-- ── Header ── -->
-<header>
+<header class="pywebview-drag-region">
   <div class="window-controls">
     <button class="wc-btn wc-close"    id="btn-wc-close"    title="Close"></button>
     <button class="wc-btn wc-minimize" id="btn-wc-minimize" title="Minimize"></button>
   </div>
 
-  <span class="logo">&#9654; Voxtral Reader</span>
+  <span class="logo pywebview-drag-region">&#9654; Voxtral Reader</span>
 
   <label class="btn primary" style="cursor:pointer;">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -568,9 +562,9 @@
     Read Books
   </button>
 
-  <span class="file-name" id="file-name">No file loaded</span>
+  <span class="file-name pywebview-drag-region" id="file-name">No file loaded</span>
 
-  <span class="header-sep"></span>
+  <span class="header-sep pywebview-drag-region"></span>
 
   <span id="status-dot" title="TTS server status"></span>
   <span id="status-label" style="font-size:12px;color:var(--muted)">checking server…</span>
@@ -1355,11 +1349,6 @@ player.onChunkChange = idx => {
 
   updateProgress(idx, player.chunks.length);
   updateSectionHighlight(idx);
-
-  // Books mode: push highlight to the transparent overlay window
-  if (booksMode) {
-    fetch(`/books/highlight/${idx}`, { method: 'POST' }).catch(() => {});
-  }
 };
 
 player.onStateChange = () => {
@@ -1555,7 +1544,6 @@ function _showBooksPage(data) {
 function _stopBooksMode() {
   booksMode = false;
   $('btn-books').classList.remove('books-active');
-  fetch('/books/clear', { method: 'POST' }).catch(() => {});   // clear highlights only
 }
 
 async function _startBooksMode() {

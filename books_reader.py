@@ -245,45 +245,27 @@ def _join_lines(parts: list[str]) -> str:
 
 
 def lines_to_chunks(lines: list[dict], max_chars: int = 160) -> list[dict]:
-    """
-    Group adjacent OCR lines into TTS chunks of at most max_chars each.
-    Each chunk records which line indices it covers so the highlight
-    overlay knows which rectangles to draw.
-    """
-    chunks: list[dict] = []
-    bucket_lines: list[int] = []
-    bucket_parts: list[str] = []
-    bucket_len = 0
+    """Group adjacent OCR lines into TTS chunks of at most max_chars each."""
+    texts: list[str] = []
+    parts: list[str] = []
+    length = 0
 
-    for i, line in enumerate(lines):
+    for line in lines:
         text = _sanitize(line['text'].strip())
         if not text:
             continue
-        if bucket_len + len(text) + 1 > max_chars and bucket_lines:
-            chunks.append({
-                'text':         _join_lines(bucket_parts),
-                'line_indices': bucket_lines[:],
-                'section':      'Books',
-                'index':        len(chunks),
-            })
-            bucket_lines = [i]
-            bucket_parts = [text]
-            bucket_len   = len(text)
+        if length + len(text) + 1 > max_chars and parts:
+            texts.append(_join_lines(parts))
+            parts, length = [text], len(text)
         else:
-            bucket_lines.append(i)
-            bucket_parts.append(text)
-            bucket_len += len(text) + 1
-
-    if bucket_lines:
-        chunks.append({
-            'text':         _join_lines(bucket_parts),
-            'line_indices': bucket_lines[:],
-            'section':      'Books',
-            'index':        len(chunks),
-        })
+            parts.append(text)
+            length += len(text) + 1
+    if parts:
+        texts.append(_join_lines(parts))
 
     # Keep short sentences ("Yes.") but drop punctuation-only crumbs.
-    return [c for c in chunks if re.search(r'[^\W_]{2,}', c['text'])]
+    texts = [t for t in texts if re.search(r'[^\W_]{2,}', t)]
+    return [{'text': t, 'section': 'Books', 'index': i} for i, t in enumerate(texts)]
 
 
 # ── Page turn ─────────────────────────────────────────────────────────────────

@@ -123,15 +123,6 @@ def _wait_for_app(timeout: float = 12.0) -> bool:
     return False
 
 
-# ── Highlight API (stub — AppKit overlay wired up in on_start) ─────────────────
-
-class HighlightApi:
-    def set_rects(self, rects: list) -> None:
-        pass
-    def clear(self) -> None:
-        pass
-
-
 # ── Reader window API ──────────────────────────────────────────────────────────
 
 class WindowApi:
@@ -170,8 +161,10 @@ def main() -> None:
         print("  ✗ App server failed to start"); _stop_tts(); sys.exit(1)
     print("  ✓ App ready")
 
-    import app as _app
-    _app._highlight_api = HighlightApi()
+    # Frameless window: only elements with the pywebview-drag-region class
+    # (the header) move it, and only when they are the element under the
+    # mouse, so header buttons and text selection elsewhere work normally.
+    webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = True
 
     win_api = WindowApi()
     window  = webview.create_window(
@@ -182,6 +175,7 @@ def main() -> None:
         height           = 720,
         min_size         = (680, 480),
         frameless        = True,
+        easy_drag        = False,   # don't drag the window from anywhere
         on_top           = True,
         resizable        = True,
         background_color = "#0d1117",

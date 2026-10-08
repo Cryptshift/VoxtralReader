@@ -42,13 +42,8 @@ app = FastAPI(title="Voxtral Reader", lifespan=_lifespan)
 
 documents: dict = {}
 
-# Set by run.py after the highlight overlay window is ready
-_highlight_api = None
-
 # State for the currently-loaded Books page
 _books_state: dict = {
-    "lines":  [],   # raw OCR lines from books_reader.ocr_page()
-    "chunks": [],   # books_reader.lines_to_chunks() output (includes line_indices)
     "win":    None, # window info dict from books_reader
     "text":   "",   # full text of the last capture, to detect unchanged pages
 }
@@ -375,8 +370,8 @@ async def books_status():
 
 
 def _register_books_page(lines: list, win: dict) -> dict:
-    """Turn OCR lines into a document, remember it for highlighting/page
-    comparison, and return the API response."""
+    """Turn OCR lines into a document, remember it for page comparison, and
+    return the API response."""
     full_text = books_reader.page_text(lines)
 
     # Separate heading/title lines from body text
@@ -386,13 +381,8 @@ def _register_books_page(lines: list, win: dict) -> dict:
     if not chunks:
         raise HTTPException(422, "No readable text found on this page")
 
-    _books_state["lines"]  = body_lines
-    _books_state["chunks"] = chunks
-    _books_state["win"]    = win
-    _books_state["text"]   = full_text
-
-    if _highlight_api:
-        _highlight_api.clear()
+    _books_state["win"]  = win
+    _books_state["text"] = full_text
 
     doc_id    = f"books-{win['id']}"
     section   = page_title or "Books Page"
@@ -425,54 +415,6 @@ async def books_capture():
     return _register_books_page(lines, win)
 
 
-@app.post("/books/highlight/{chunk_idx}")
-async def books_highlight(chunk_idx: int):
-    """Update the highlight overlay for the given chunk index."""
-    chunks = _books_state["chunks"]
-    lines  = _books_state["lines"]
-    win    = _books_state["win"]
-
-    if not chunks or win is None or not 0 <= chunk_idx < len(chunks):
-        return {"ok": False}
-
-    line_indices = chunks[chunk_idx].get("line_indices", [])
-    ww, wh = win["width"], win["height"]
-
-    rects = []
-    try:
-        from AppKit import NSScreen
-        screen_h = NSScreen.mainScreen().frame().size.height
-    except Exception:
-        screen_h = 1440  # safe fallback
-
-    for i in line_indices:
-        if 0 <= i < len(lines):
-            bx, by, bw, bh = lines[i]["bbox"]
-            # Vision bbox: normalised, bottom-left origin, relative to window image.
-            # Convert to AppKit screen coords (bottom-left origin, points).
-            # Quartz win['y'] is from top of screen → AppKit y is from bottom.
-            appkit_win_y = screen_h - win["y"] - win["height"]
-            rects.append([
-                round(win["x"] + bx * ww, 1),
-                round(appkit_win_y + by * wh, 1),
-                round(bw * ww, 1),
-                round(bh * wh, 1),
-            ])
-
-    if _highlight_api:
-        _highlight_api.set_rects(rects)
-
-    return {"ok": True, "rects": len(rects)}
-
-
-@app.post("/books/clear")
-async def books_clear():
-    """Clear the highlight overlay (used when Books mode stops)."""
-    if _highlight_api:
-        _highlight_api.clear()
-    return {"ok": True}
-
-
 @app.post("/books/next_page")
 async def books_next_page():
     """Advance one page in Books, then capture and return the new page.
@@ -481,8 +423,6 @@ async def books_next_page():
     the text never changes (last page, or the key press didn't reach Books),
     so the client stops instead of re-reading the same page forever.
     """
-    if _highlight_api:
-        _highlight_api.clear()
     previous = _books_state["text"]
     try:
         await asyncio.to_thread(books_reader.turn_page)

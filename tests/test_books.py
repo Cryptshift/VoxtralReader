@@ -116,10 +116,3 @@ def test_page_turn_permission_error_is_reported(books, monkeypatch):
     r = client.post("/books/next_page")
     assert r.status_code == 503
     assert "blocked" in r.json()["detail"]
-
-
-def test_clear_does_not_turn_the_page(books, monkeypatch):
-    client, state = books
-    monkeypatch.setattr(books_reader, "turn_page", lambda: state.update(turns=state["turns"] + 1))
-    assert client.post("/books/clear").json() == {"ok": True}
-    assert state["turns"] == 0
