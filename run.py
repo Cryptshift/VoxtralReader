@@ -8,8 +8,12 @@ import time
 import urllib.request
 from pathlib import Path
 
-import uvicorn
-import webview
+try:
+    import uvicorn
+    import webview
+except ImportError as e:
+    sys.exit(f"Missing dependency ({e.name}). Install them once with `uv sync`, "
+             f"then start with `uv run run.py` (or `.venv/bin/python run.py`).")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ROOT     = Path(__file__).resolve().parent

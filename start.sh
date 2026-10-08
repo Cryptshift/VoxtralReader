@@ -9,9 +9,22 @@ cd "$(dirname "$0")"
 MODEL="${TTS_MODEL:-mlx-community/Voxtral-4B-TTS-2603-mlx-bf16}"
 TTS_PORT="${TTS_PORT:-8000}"
 APP_PORT="${APP_PORT:-7860}"
-# Use the project's .venv if there is one, else whatever `python` is on PATH.
-if [[ -z "${PYTHON:-}" && -x .venv/bin/python ]]; then PYTHON=".venv/bin/python"; fi
-PYTHON="${PYTHON:-python}"
+# Python: $PYTHON if set, otherwise the project's .venv (created by `uv sync`).
+if [[ -z "${PYTHON:-}" ]]; then
+  if [[ -x .venv/bin/python ]]; then
+    PYTHON=".venv/bin/python"
+  else
+    echo ""
+    echo "  ✗ Dependencies aren't installed yet (no .venv in $(pwd))."
+    if command -v uv > /dev/null 2>&1; then
+      echo "    Run this once, then start again:  uv sync"
+    else
+      echo "    Install uv (https://docs.astral.sh/uv/), then run once:  uv sync"
+    fi
+    echo "    Or point PYTHON at an environment that has them:  PYTHON=python ./start.sh"
+    exit 1
+  fi
+fi
 TTS_URL="http://127.0.0.1:${TTS_PORT}"
 APP_URL="http://127.0.0.1:${APP_PORT}"
 TTS_LOG="logs/tts.log"
