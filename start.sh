@@ -9,6 +9,8 @@ cd "$(dirname "$0")"
 MODEL="${TTS_MODEL:-mlx-community/Voxtral-4B-TTS-2603-mlx-bf16}"
 TTS_PORT="${TTS_PORT:-8000}"
 APP_PORT="${APP_PORT:-7860}"
+# Use the project's .venv if there is one, else whatever `python` is on PATH.
+if [[ -z "${PYTHON:-}" && -x .venv/bin/python ]]; then PYTHON=".venv/bin/python"; fi
 PYTHON="${PYTHON:-python}"
 TTS_URL="http://127.0.0.1:${TTS_PORT}"
 APP_URL="http://127.0.0.1:${APP_PORT}"
