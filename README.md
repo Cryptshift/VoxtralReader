@@ -1,180 +1,265 @@
 # Voxtral Reader
 
-A local scientific PDF reader that uses Mistral's Voxtral TTS model (via `mlx-audio`) to read papers aloud. Built for Apple Silicon (M-series). No cloud dependency — everything runs locally.
+Reads PDFs (and pages of the macOS Books app) aloud with Mistral's Voxtral
+text-to-speech model, running locally on Apple Silicon through
+[`mlx-audio`](https://github.com/Blaizzy/mlx-audio). After the one-time model
+download, nothing leaves your Mac.
+
+- Cleans scientific PDFs before reading: citations stripped, math replaced,
+  abbreviations expanded, references optional.
+- Section sidebar, click-to-seek, 20 voices, 0.75–2× speed.
+- History of opened documents that survives restarts.
+- **Books mode**: OCRs the page open in Apple Books, reads it, turns the page
+  and carries on.
 
 ---
 
-## Quick Start
+## Requirements
+
+- Apple Silicon Mac running macOS 14 or later (MLX needs it)
+- Python 3.10+ (tested with 3.13)
+- About 8 GB of disk for the model and enough free memory to hold it
+  (one copy of the ~8 GB model is loaded)
+
+## Install
 
 ```bash
-cd ~/VoxtralReader
-./start.sh          # starts mlx-audio TTS server + FastAPI app
-# or double-click VoxtralReader.command in Finder
+cd VoxtralReader
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Opens at **http://localhost:7860**
+`requirements.txt` pins versions that are known to work together, including
+**mlx-audio 0.4.2**. mlx-audio 0.5 changed its server, so don't upgrade it
+on its own.
+
+### The model
+
+The first time audio is requested, mlx-audio downloads
+[`mlx-community/Voxtral-4B-TTS-2603-mlx-bf16`](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16)
+(~8 GB) into `~/.cache/huggingface/`. The weights are **not** part of this
+repository. They come from
+[`mistralai/Voxtral-4B-TTS-2603`](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)
+and are licensed **CC BY-NC (non-commercial use only)**, separately from this
+code.
 
 ---
 
-## Architecture
+## Running it
+
+There are two launchers. Both bind only to `127.0.0.1`, so nothing is exposed
+to your network.
+
+### In the browser: `./start.sh` (or double-click `VoxtralReader.command`)
+
+```bash
+./start.sh            # then open http://127.0.0.1:7860
+```
+
+- Starts the mlx-audio TTS server on port 8000, or reuses one that's already
+  running. Its output goes to `logs/tts.log`.
+- Loads the model in the background, then serves the app on port 7860.
+- Uses `.venv/bin/python` if the project has a `.venv`, otherwise `python` on
+  your `PATH`.
+- If a port is taken by another program, it tells you which one and exits.
+  It never kills anything.
+- Ctrl+C stops the app and the TTS server it started.
+
+`VoxtralReader.command` runs `start.sh` in Terminal and opens your browser as
+soon as the app responds (allowing up to 15 minutes for the first model
+download).
+
+Environment overrides: `APP_PORT`, `TTS_PORT`, `TTS_MODEL`, `PYTHON`, for
+example `APP_PORT=7861 ./start.sh`.
+
+### As a desktop window: `python run.py`
+
+```bash
+source .venv/bin/activate
+python run.py
+```
+
+Opens a frameless, always-on-top reader window (pywebview) with its own
+close / minimize / pin buttons. It starts the TTS server if needed, logging to
+`logs/tts.log`, and stops it when you close the window. The model loads on the
+first request, so the first paragraph takes a little longer. `APP_PORT` and
+`TTS_PORT` work here too.
+
+### Keyboard
+
+`Space` play/pause · `←` / `→` previous / next paragraph · ■ stops playback and
+cancels pending requests.
+
+---
+
+## Books mode
+
+Click **Read Books** with a book open in Apple Books. Voxtral Reader takes a
+screenshot of the Books window, runs Apple's Vision OCR on it and reads the
+page. At the end of the page it turns the page (right arrow), waits for the
+new page to settle, and keeps reading. It stops on its own if the page doesn't
+change, for example at the end of the book or if the key press was blocked.
+Two-page spreads are read left page first, then right.
+
+macOS asks for permissions the first time. Grant them to the app that runs
+Voxtral Reader (Terminal, or the Python binary):
+
+| Permission (System Settings → Privacy & Security) | Needed for |
+|---|---|
+| **Screen Recording** | capturing the Books window |
+| **Accessibility** | sending the page-turn key press |
+| **Automation** (Books, System Events) | bringing Books to the front to turn the page |
+
+The on-screen highlight overlay for Books mode is not implemented yet. The
+highlight endpoint computes rectangles, but the overlay in `run.py` is a stub.
+
+---
+
+## How it works
 
 ```
 VoxtralReader/
-├── app.py               # FastAPI backend (all API routes)
-├── pdf_processor.py     # PDF extraction + text cleaning pipeline
-├── static/index.html    # Single-page UI (all JS inline, no build step)
-├── requirements.txt
-├── start.sh             # Starts both servers, warms up model
-└── VoxtralReader.command  # Finder double-click launcher
-
-~/.voxtral/              # Persistent data (auto-created)
-├── history.json         # Document history metadata
-└── docs/
-    └── {doc_id}.json    # Full chunk data per document
+├── app.py               # FastAPI backend: upload, audio proxy, history, Books routes
+├── pdf_processor.py     # PDF extraction + text cleaning + chunking
+├── books_reader.py      # Books window capture, Vision OCR, reading order, page turns
+├── static/index.html    # Single-page UI (vanilla JS, no build step)
+├── run.py               # Desktop-window launcher (pywebview)
+├── start.sh             # Browser launcher
+├── VoxtralReader.command  # Finder double-click launcher (runs start.sh)
+└── tests/               # pytest suite (no model needed)
 ```
 
-Two servers run simultaneously:
-- **Port 8000** — `mlx-audio` TTS server (OpenAI-compatible `/v1/audio/speech`)
-- **Port 7860** — FastAPI app (serves UI + proxies TTS requests)
+Two local servers:
 
----
+- **127.0.0.1:8000**: `mlx-audio` TTS server (OpenAI-style `/v1/audio/speech`), one worker
+- **127.0.0.1:7860**: the FastAPI app (UI, PDF processing, proxies TTS requests)
 
-## Stack
+### PDF processing (`pdf_processor.py`)
 
-| Layer | Tech |
-|---|---|
-| TTS model | `mistralai/Voxtral-4B-TTS-2603` via `mlx-community/Voxtral-4B-TTS-2603-mlx-bf16` |
-| TTS server | `mlx-audio` (Apple Silicon / Metal, OpenAI-compatible API) |
-| Backend | FastAPI + uvicorn |
-| PDF extraction | PyMuPDF (`fitz`) |
-| Frontend | Vanilla JS + HTML5 Audio, no framework |
+1. **Extraction**: PyMuPDF text blocks. Two-column pages are detected from
+   block width and position. Each column is read top to bottom, left column
+   first, with full-width blocks placed where they appear.
+2. **Cleaning**:
+   - citations (`[1]`, `[1,2]`, `[Smith et al., 2023]`, `(Author, Year)`,
+     superscript markers like `shown1,2`) are removed, while decimals,
+     versions and symbols (`0.01`, `3.12`, `x2`) are kept
+   - LaTeX math becomes `[equation]`
+   - URLs, DOIs and emails are removed
+   - about 20 abbreviations are expanded (`Fig. 3` → `Figure 3`, `e.g.` → `for example`)
+   - line-break hyphenation is fixed
+   - page numbers and noise lines are removed
+3. **References**: the last "References"/"Bibliography" heading in the back
+   part of the document starts the references, which are only read when
+   **Include References** is on. A "References" line in a table of contents
+   is ignored.
+4. **Sections**: numbered (`2 Related Work`, `3.1 …`), roman (`IV. …`) and
+   all-caps headings. Wrapped body lines that merely start with a number are
+   ignored.
+5. **Chunking**: sentences grouped into chunks of about 160 characters. Short
+   sentences such as "Yes." are kept.
 
----
+PDFs without a text layer (scanned images) are rejected with a message. Run
+them through OCR first.
 
-## Installation
+### Playback (`static/index.html`)
 
-```bash
-pip install -r requirements.txt
-# requirements: fastapi, uvicorn[standard], httpx, pymupdf, pdfplumber,
-#               python-multipart, mlx-audio>=0.4.0, webrtcvad
+- When a chunk is ready and playing, the next 2 chunks are generated in the
+  background. Chunks with audio ready get a green dot.
+- Failed requests are retried. If the app server lost the document (for
+  example after a restart), the page re-sends it via `/restore` and retries.
+  If a chunk still can't be generated, playback stops with an error message
+  instead of skipping ahead.
+- Stop, voice changes and opening another document cancel the browser's
+  pending requests. With mlx-audio 0.4.2, a generation that has already
+  started on the TTS server still runs to completion.
+
+### History and data
+
+Stored in `~/.voxtral/` (set `VOXTRAL_HOME` to use another directory):
+
+```
+~/.voxtral/
+├── history.json     # metadata, one entry per document
+└── docs/{id}.json   # full chunk data per document
 ```
 
-First run downloads the model (~8 GB from HuggingFace). Cached at `~/.cache/huggingface/`.
+Document ids are random UUIDs. Histories from older versions, which used
+numeric ids, still load.
 
 ---
 
-## How It Works
-
-### PDF Processing (`pdf_processor.py`)
-
-1. **Extraction** — PyMuPDF `get_text("blocks")` extracts paragraph-level blocks. Two-column layout is detected by classifying blocks as full-width / left-col / right-col based on block width and centre-x. Reading order: full-width → left column → right column per page.
-
-2. **Cleaning** — aggressive pipeline runs before chunking:
-   - Strip all citation forms: `[1]`, `[1,2]`, `[Smith et al., 2023]`, `(Author, Year)`
-   - Remove LaTeX math → replace with `[equation]`
-   - Remove URLs, DOIs, emails, footnote superscripts
-   - Expand ~25 abbreviations (`Fig.` → `Figure N`, `e.g.,` → `for example,`, etc.)
-   - Fix line-break hyphenation (ASCII and Unicode hyphens U+2010–U+2015)
-   - Strip journal header noise (standalone numbers, short noise lines, trailing ISSNs)
-   - References section split off — only appended if "Include References" toggle is on
-
-3. **Chunking** — split at sentence boundaries, target ~160 chars per chunk (roughly one sentence). Shorter chunks = consistent TTS energy (avoids the model "running out of breath" on long inputs).
-
-### Audio Playback (`static/index.html` — `Player` class)
-
-- **Prefetch window**: 5 chunks ahead. Each fetch uses `AbortController` for cancellation.
-- **Cached state**: chunks with ready audio get a green dot indicator.
-- **Stop button**: aborts all in-flight fetch requests immediately, clears cache.
-- Playback via HTML5 `<audio>` element. Seamless between chunks via prefetch.
-
-### History Persistence
-
-- On upload: full doc data POSTed to `/history` → saved to `~/.voxtral/docs/{id}.json`
-- On page load: `GET /history` returns metadata only (fast). Full data lazy-loaded on first click.
-- On server restart: clicking a history item calls `/restore` to re-register chunks with the in-memory `documents` dict.
-
----
-
-## API Reference
+## API
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/` | Serves `static/index.html` |
-| `POST` | `/upload?include_refs=bool` | Upload PDF, returns `{ doc_id, sections, chunks, total_chunks }` |
-| `GET` | `/audio/{doc_id}/{chunk_idx}?voice=X` | Generate + return WAV for one chunk |
-| `POST` | `/restore` | Re-register doc data with in-memory store (used after server restart) |
-| `DELETE` | `/document/{doc_id}` | Remove from in-memory store only |
-| `GET` | `/history` | List history metadata |
-| `POST` | `/history` | Save history entry + doc data to disk |
-| `GET` | `/history/{doc_id}` | Load full doc data from disk |
-| `DELETE` | `/history/{doc_id}` | Remove from history + disk + memory |
-| `GET` | `/voices` | List available voices (proxies mlx-audio, falls back to preset list) |
-| `GET` | `/health` | Check app + TTS server status |
+| `GET` | `/` | The UI |
+| `POST` | `/upload?include_refs=bool` | Upload a PDF → `{doc_id, sections, chunks, total_chunks, has_references}`. 422 if it has no text. |
+| `GET` | `/audio/{doc_id}/{chunk_idx}?voice=X` | WAV for one chunk (falls back to the saved history copy if the doc isn't in memory) |
+| `POST` | `/restore` | Re-register a document's chunks under its id (replaces any in-memory copy) |
+| `DELETE` | `/document/{doc_id}` | Remove from memory only |
+| `GET` | `/history` | History metadata |
+| `POST` | `/history` | Save `{doc_id, filename, timestamp, total_chunks, data}` |
+| `GET` | `/history/{doc_id}` | Full saved document |
+| `DELETE` | `/history/{doc_id}` | Remove from history, disk and memory |
+| `GET` | `/books/status` | Whether Books integration is available and a Books window is open |
+| `POST` | `/books/capture` | OCR the current Books page and register it as a document |
+| `POST` | `/books/next_page` | Turn the page, wait for it to settle and return it (409 if it didn't change) |
+| `POST` | `/books/highlight/{chunk_idx}` | Compute highlight rectangles for a chunk (overlay not implemented yet) |
+| `POST` | `/books/clear` | Clear highlights |
+| `GET` | `/voices` | `{voices, default}`, from the TTS server or the 20 presets |
+| `GET` | `/health` | `{app: "ok", tts: bool}` |
+
+Document ids must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`.
 
 ---
 
 ## Configuration
 
-Environment variables (set in shell or `.env`):
+| Variable | Default | Used by |
+|---|---|---|
+| `TTS_URL` | `http://127.0.0.1:8000` | app (`VLLM_URL` is accepted as an older name) |
+| `TTS_MODEL` | `mlx-community/Voxtral-4B-TTS-2603-mlx-bf16` | app, start.sh |
+| `DEFAULT_VOICE` | `casual_male` | app |
+| `VOXTRAL_HOME` | `~/.voxtral` | app |
+| `APP_PORT` / `TTS_PORT` | `7860` / `8000` | start.sh, run.py, VoxtralReader.command (`APP_PORT`) |
+| `PYTHON` | `.venv/bin/python` or `python` | start.sh |
 
-```bash
-VLLM_URL=http://localhost:8000          # mlx-audio server URL
-TTS_MODEL=mlx-community/Voxtral-4B-TTS-2603-mlx-bf16
-DEFAULT_VOICE=casual_male
-```
+Set these in your shell. There is no `.env` file support.
 
-### Available Voices (20 presets)
+### Voices (20 presets)
 
 `casual_male` `casual_female` `cheerful_female` `neutral_male` `neutral_female`
 `fr_male` `fr_female` `es_male` `es_female` `de_male` `de_female`
 `it_male` `it_female` `pt_male` `pt_female` `nl_male` `nl_female`
 `ar_male` `hi_male` `hi_female`
 
-### Workers
-
-`start.sh` uses `--workers 4` for mlx-audio. Each worker handles one TTS request in parallel. On M4 Max this lets the 5-chunk prefetch fill concurrently. Reduce to `2` if you see memory pressure (model is ~8 GB per worker process).
-
----
-
-## UI Features
-
-- **Section TOC sidebar** — auto-detected from numbered/all-caps headings; click to jump
-- **History sidebar tab** — persists across reloads; click to switch documents; × to delete
-- **Playback controls** — ⏮ prev / ⏸▶ play-pause / ■ stop / ⏭ next paragraph
-- **Progress bar** — clickable to seek to any paragraph
-- **Voice selector** — dropdown of 20 presets
-- **Speed selector** — 0.75× to 2×
-- **Green dot indicator** — shows which chunks have cached audio ready
-- **Keyboard shortcuts** — `Space` play/pause, `←/→` skip paragraph
-- **Server status indicator** — green dot when mlx-audio is reachable
-
----
-
-## Known Issues / Things To Improve
-
-- **Page 1 journal headers** — affiliation sidebars on page 1 of journal articles still appear in output before the abstract. Could add a heuristic to skip blocks containing "Received:", "Correspondence:", department strings, etc.
-- **Word-level highlighting** — chunk-level highlighting is implemented; word-level would need proportional timing estimation from `audio.currentTime / audio.duration` mapped across word count.
-- **Very large PDFs** — history stores full chunk JSON in `~/.voxtral/docs/`. A 200-page book could be several MB. Fine for papers; worth watching for textbooks.
-- **Equation handling** — equations are replaced with `[equation]` spoken literally. Could be skipped entirely with a toggle.
-- **mlx-audio workers** — `--workers N` spawns N separate processes each loading the full model. If memory is tight, lower to 2 in `start.sh`.
-
 ---
 
 ## Development
 
 ```bash
-# Run app only (assumes mlx-audio already running)
-uvicorn app:app --host 0.0.0.0 --port 7860 --reload
-
-# Run mlx-audio only
-python -m mlx_audio.server --host 0.0.0.0 --port 8000 --workers 4
-
-# Test PDF processing directly
-python - <<'EOF'
-from pdf_processor import process_pdf
-doc = process_pdf("yourpaper.pdf")
-print(f"{doc['total_chunks']} chunks, {len(doc['sections'])} sections")
-for c in doc['chunks'][:5]:
-    print(f"  [{c['section']}] {c['text'][:80]}")
-EOF
+pip install -r requirements-dev.txt
+pytest                      # fast; no model or TTS server needed
 ```
+
+Run the pieces separately:
+
+```bash
+python -m mlx_audio.server --host 127.0.0.1 --port 8000
+uvicorn app:app --host 127.0.0.1 --port 7860
+```
+
+## Known limitations
+
+- Affiliation sidebars on page 1 of journal articles can still be read before
+  the abstract.
+- Equations are read as "[equation]".
+- Highlighting is per chunk, not per word. Books mode has no on-screen
+  highlight yet.
+- Very large PDFs make large history files (`~/.voxtral/docs/`).
+
+## License
+
+The code is MIT licensed (see [LICENSE](LICENSE)). The Voxtral model weights
+are not included and are licensed separately under CC BY-NC by Mistral AI.
