@@ -1,5 +1,5 @@
 import re
-import fitz  # pymupdf
+import pymupdf
 from typing import List, Dict, Any, Tuple
 
 # ── Inline citation patterns ──────────────────────────────────────────────────
@@ -139,7 +139,7 @@ _REFS_BOUNDARY = re.compile(
 # Core functions
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _extract_page(page: fitz.Page) -> str:
+def _extract_page(page: pymupdf.Page) -> str:
     """
     Extract text using paragraph blocks rather than individual words.
     Each block is a complete paragraph — they never span columns — so
@@ -200,7 +200,7 @@ def _extract_page(page: fitz.Page) -> str:
 
 def _extract_raw(path: str) -> str:
     pages = []
-    doc = fitz.open(path)
+    doc = pymupdf.open(path)
     for page in doc:
         try:
             text = _extract_page(page)
