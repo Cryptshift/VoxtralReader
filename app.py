@@ -3,6 +3,7 @@ import os
 import re
 import struct
 import tempfile
+import uuid
 from pathlib import Path
 
 import httpx
@@ -64,6 +65,26 @@ def _doc_path(doc_id: str) -> Path:
     return path
 
 
+def _get_doc(doc_id: str) -> dict | None:
+    """Look a document up in memory, falling back to its saved history file
+    (the in-memory store is empty after a server restart)."""
+    _check_id(doc_id)
+    doc = documents.get(doc_id)
+    if doc is not None:
+        return doc
+    path = _doc_path(doc_id)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("chunks"), list):
+        return None
+    documents[doc_id] = data
+    return data
+
+
 def _dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,17 +119,18 @@ async def upload_pdf(file: UploadFile = File(...), include_refs: bool = Query(Fa
         raise HTTPException(500, f"PDF processing failed: {e}")
     finally:
         os.unlink(tmp)
-    doc_id = str(len(documents))
+    # Random ids: never reused across restarts, so they can't collide with
+    # (and overwrite) documents already saved in history.
+    doc_id = uuid.uuid4().hex
     documents[doc_id] = doc
     return {"doc_id": doc_id, **doc}
 
 
 @app.get("/audio/{doc_id}/{chunk_idx}")
 async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOICE)):
-    _check_id(doc_id)
-    if doc_id not in documents:
+    doc = _get_doc(doc_id)
+    if doc is None:
         raise HTTPException(404, "Document not found")
-    doc = documents[doc_id]
     if chunk_idx >= len(doc["chunks"]):
         raise HTTPException(404, "Chunk index out of range")
     text = doc["chunks"][chunk_idx]["text"].strip()
@@ -131,9 +153,23 @@ async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOIC
 
 @app.post("/restore")
 async def restore_document(payload: dict):
+    """(Re-)register a document the browser already has, e.g. after a restart.
+
+    Always replaces whatever is in memory under that id, so the audio served
+    for an id can never come from a different document.
+    """
     doc_id = _check_id(payload.get("doc_id"))
-    if doc_id not in documents:
-        documents[doc_id] = {k: payload[k] for k in ("sections","chunks","total_chunks","has_references") if k in payload}
+    chunks = payload.get("chunks")
+    if not isinstance(chunks, list) or not all(
+        isinstance(c, dict) and isinstance(c.get("text"), str) for c in chunks
+    ):
+        raise HTTPException(422, "Document has no valid chunks")
+    documents[doc_id] = {
+        "sections":       payload.get("sections") or [{"name": "Document", "chunk_idx": 0}],
+        "chunks":         chunks,
+        "total_chunks":   len(chunks),
+        "has_references": bool(payload.get("has_references")),
+    }
     return {"ok": True}
 
 
