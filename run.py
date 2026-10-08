@@ -23,6 +23,8 @@ TTS_URL  = f"http://127.0.0.1:{TTS_PORT}"
 APP_URL  = f"http://127.0.0.1:{APP_PORT}"
 LOG_DIR  = ROOT / "logs"
 TTS_LOG  = LOG_DIR / "tts.log"
+# Concurrent requests mlx-audio may batch: the playing chunk + 2 prefetched.
+TTS_MAX_BATCH = int(os.getenv("TTS_MAX_BATCH", 3))
 
 # app.py reads these at import time (uvicorn imports it in this process).
 os.environ["TTS_URL"] = TTS_URL
@@ -80,7 +82,8 @@ def _start_tts() -> None:
     log.flush()
     _tts_proc = subprocess.Popen(
         [sys.executable, "-m", "mlx_audio.server",
-         "--host", "127.0.0.1", "--port", str(TTS_PORT)],
+         "--host", "127.0.0.1", "--port", str(TTS_PORT),
+         "--tts-max-batch-size", str(TTS_MAX_BATCH)],
         stdout=log, stderr=subprocess.STDOUT, cwd=ROOT,
     )
     log.close()  # the child keeps its own handle

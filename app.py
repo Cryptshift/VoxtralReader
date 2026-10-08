@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
@@ -64,6 +64,12 @@ _BOOKS_NOT_FOUND = (
 # mlx-audio server. VLLM_URL is the old name, still honoured.
 TTS_URL      = os.getenv("TTS_URL") or os.getenv("VLLM_URL") or "http://127.0.0.1:8000"
 TTS_MODEL    = os.getenv("TTS_MODEL",    "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16")
+# Audio is requested as streamed raw PCM (16-bit mono) and wrapped in a WAV
+# header here. Streaming lets mlx-audio notice a cancelled request between
+# chunks and stop generating; with a single non-streamed WAV it can only stop
+# once the whole paragraph is done. Voxtral outputs 24 kHz.
+TTS_SAMPLE_RATE     = int(os.getenv("TTS_SAMPLE_RATE", "24000"))
+TTS_STREAM_INTERVAL = 2.0   # seconds of audio per streamed chunk
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "casual_male")
 
 PRESET_VOICES = [
@@ -179,7 +185,8 @@ async def upload_pdf(file: UploadFile = File(...), include_refs: bool = Query(Fa
 
 
 @app.get("/audio/{doc_id}/{chunk_idx}")
-async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOICE)):
+async def get_audio(request: Request, doc_id: str, chunk_idx: int,
+                    voice: str = Query(DEFAULT_VOICE)):
     doc = _get_doc(doc_id)
     if doc is None:
         raise HTTPException(404, "Document not found")
@@ -188,22 +195,69 @@ async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOIC
     text = doc["chunks"][chunk_idx]["text"].strip()
     if not is_speakable(text):
         return Response(content=_silence_wav(), media_type="audio/wav")
+    payload = {
+        "model": TTS_MODEL, "input": text, "voice": voice,
+        "response_format": "pcm", "stream": True,
+        "streaming_interval": TTS_STREAM_INTERVAL,
+    }
     try:
-        resp = await _client().post(f"{TTS_URL}/v1/audio/speech", json={
-            "input": text, "model": TTS_MODEL,
-            "response_format": "wav", "voice": voice,
-        })
-        resp.raise_for_status()
-        return Response(content=resp.content, media_type="audio/wav")
+        pcm = await _unless_disconnected(request, _synthesize_pcm(payload))
+    except _ClientGone:
+        # The browser aborted (stop, skip, voice change). Closing our upstream
+        # request made mlx-audio cancel the generation; nobody reads this.
+        return Response(status_code=499)
+    return Response(content=_wav(pcm, TTS_SAMPLE_RATE), media_type="audio/wav")
+
+
+class _ClientGone(Exception):
+    pass
+
+
+async def _synthesize_pcm(payload: dict) -> bytes:
+    """Stream raw PCM for one chunk from mlx-audio."""
+    try:
+        async with _client().stream(
+            "POST", f"{TTS_URL}/v1/audio/speech", json=payload
+        ) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode(errors="replace")[:200]
+                raise HTTPException(502, f"TTS server returned {resp.status_code}: {body}")
+            pcm = bytearray()
+            async for part in resp.aiter_bytes():
+                pcm += part
     except httpx.ConnectError:
         raise HTTPException(503, "TTS server unreachable — is mlx-audio running?")
     except httpx.TimeoutException:
         raise HTTPException(504, "TTS server timed out")
-    except httpx.HTTPStatusError as e:
-        body = e.response.text[:200]
-        raise HTTPException(502, f"TTS server returned {e.response.status_code}: {body}")
     except httpx.HTTPError as e:
         raise HTTPException(502, f"TTS request failed: {e}")
+    if len(pcm) < 2:
+        raise HTTPException(502, "TTS server returned no audio")
+    return bytes(pcm[: len(pcm) // 2 * 2])
+
+
+async def _unless_disconnected(request: Request, coro):
+    """Await coro, but cancel it (closing its upstream connection) and raise
+    _ClientGone if the browser disconnects first."""
+    task = asyncio.ensure_future(coro)
+
+    async def watch():
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.25)
+
+    watcher = asyncio.ensure_future(watch())
+    try:
+        await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        raise _ClientGone
+    finally:
+        watcher.cancel()
 
 
 @app.post("/restore")
@@ -482,9 +536,14 @@ async def health():
     return {"app": "ok", "tts": tts_ok}
 
 
-def _silence_wav() -> bytes:
-    sr, n = 24000, 2400
+def _wav(pcm: bytes, sr: int) -> bytes:
+    """Wrap 16-bit mono PCM in a WAV header."""
+    n = len(pcm)
     hdr = struct.pack("<4sI4s4sIHHIIHH4sI",
-        b"RIFF", 36+n*2, b"WAVE", b"fmt ", 16, 1, 1,
-        sr, sr*2, 2, 16, b"data", n*2)
-    return hdr + b"\x00" * (n * 2)
+        b"RIFF", 36 + n, b"WAVE", b"fmt ", 16, 1, 1,
+        sr, sr * 2, 2, 16, b"data", n)
+    return hdr + pcm
+
+
+def _silence_wav() -> bytes:
+    return _wav(b"\x00" * 4800, 24000)   # 0.1 s

@@ -14,15 +14,13 @@ dependencies = [
     # PDF extraction
     "pymupdf>=1.27.2.3",
     # TTS server. mlx-audio changes its server API between minor versions,
-    # so it is pinned exactly together with the MLX stack it was tested with.
-    "mlx-audio==0.4.2",
-    "mlx==0.31.2",
-    "mlx-lm==0.31.1",
-    "transformers==5.6.2",
-    # Voxtral's Tekken tokenizer
-    "tiktoken>=0.12.0",
-    # mlx_audio.server imports `webrtcvad` without declaring it. This fork
-    # ships prebuilt wheels (plain webrtcvad must be compiled).
+    # so it is pinned exactly. The "tts" extra brings mistral-common[audio],
+    # which Voxtral's tokenizer needs.
+    "mlx-audio[tts]==0.5.8",
+    # mlx_audio.server imports `webrtcvad`. mlx-audio's "server" extra would
+    # pull plain webrtcvad, which has to be compiled (and needs setuptools'
+    # pkg_resources); this fork ships prebuilt wheels of the same module.
+    # The other server deps (fastapi, uvicorn, python-multipart) are above.
     "webrtcvad-wheels>=2.0.14.post1",
     # Desktop window (run.py)
     "pywebview>=6.2.1",

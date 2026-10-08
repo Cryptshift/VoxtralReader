@@ -28,6 +28,8 @@ fi
 TTS_URL="http://127.0.0.1:${TTS_PORT}"
 APP_URL="http://127.0.0.1:${APP_PORT}"
 TTS_LOG="logs/tts.log"
+# Concurrent requests mlx-audio may batch: the playing chunk + 2 prefetched.
+TTS_MAX_BATCH="${TTS_MAX_BATCH:-3}"
 
 echo ""
 echo "  ▶ Voxtral Reader"
@@ -78,7 +80,8 @@ else
 
   mkdir -p logs
   echo "  → Starting mlx-audio on :${TTS_PORT}  (log: ${TTS_LOG})"
-  "$PYTHON" -m mlx_audio.server --host 127.0.0.1 --port "$TTS_PORT" > "$TTS_LOG" 2>&1 &
+  "$PYTHON" -m mlx_audio.server --host 127.0.0.1 --port "$TTS_PORT" \
+    --tts-max-batch-size "$TTS_MAX_BATCH" > "$TTS_LOG" 2>&1 &
   TTS_PID=$!
 
   echo -n "  Waiting for TTS server"
