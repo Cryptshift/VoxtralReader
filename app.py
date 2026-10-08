@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from audio_cache import AudioCache, cache_key
@@ -39,6 +40,8 @@ async def _lifespan(_app):
 
 
 app = FastAPI(title="Voxtral Reader", lifespan=_lifespan)
+# CSS and the UI's ES modules (no build step).
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 documents: dict = {}
 

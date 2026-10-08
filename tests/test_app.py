@@ -184,3 +184,23 @@ def test_voices_falls_back_to_presets_when_tts_is_down(client):
 
 def test_health_reports_tts_status(client):
     assert client.get("/health").json() == {"app": "ok", "tts": False}
+
+
+def test_ui_assets_and_module_imports_are_served(client):
+    import re
+    html = client.get("/").text
+    assert '/static/css/app.css' in html and '/static/js/main.js' in html
+    assert client.get("/static/css/app.css").status_code == 200
+    # Follow every relative import from main.js; each module must be served
+    # as JavaScript.
+    seen, todo = set(), ["main.js"]
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        r = client.get(f"/static/js/{name}")
+        assert r.status_code == 200, name
+        assert "javascript" in r.headers["content-type"], name
+        todo += re.findall(r"from\s+'\./([\w.]+)'", r.text)
+    assert {"api.js", "player.js", "library.js", "books.js", "reader.js", "ui.js"} <= seen
