@@ -1208,8 +1208,10 @@ async function loadVoices() {
     const j = await r.json();
     const voices = (j.voices || []).filter(v => typeof v === 'string');
     if (!voices.length) return;
-    voiceSelect.replaceChildren(...voices.map(v =>
-      new Option(v, v, false, v === 'casual_male')));
+    const def = voices.includes(j.default) ? j.default
+              : voices.includes(player.voice) ? player.voice : voices[0];
+    voiceSelect.replaceChildren(...voices.map(v => new Option(v, v, false, v === def)));
+    player.setVoice(def);
   } catch {}
 }
 loadVoices();

@@ -436,15 +436,40 @@ async def books_next_page():
     )
 
 
+def _parse_voices(payload) -> list[str]:
+    """Voice names from a /v1/audio/voices response, whatever its shape:
+    {"voices": ["a", ...]}, the OpenAI-style {"data": [{"id": "a"}, ...]}
+    used by mlx-audio 0.5.x, or a bare list."""
+    items = payload
+    if isinstance(payload, dict):
+        items = payload.get("voices", payload.get("data", []))
+    if not isinstance(items, list):
+        return []
+    names: list[str] = []
+    for item in items:
+        name = item if isinstance(item, str) else (
+            (item.get("id") or item.get("name") or item.get("voice"))
+            if isinstance(item, dict) else None
+        )
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    return names
+
+
 @app.get("/voices")
 async def list_voices():
+    voices: list[str] = []
     try:
-        r = await _client().get(f"{TTS_URL}/v1/audio/voices", timeout=5.0)
+        # mlx-audio 0.4.x has no such route (404); 0.5.x needs ?model= and
+        # returns an empty list for Voxtral, whose voices aren't voice packs.
+        r = await _client().get(
+            f"{TTS_URL}/v1/audio/voices", params={"model": TTS_MODEL}, timeout=5.0
+        )
         if r.status_code == 200:
-            return r.json()
+            voices = _parse_voices(r.json())
     except Exception:
         pass
-    return {"voices": PRESET_VOICES}
+    return {"voices": voices or PRESET_VOICES, "default": DEFAULT_VOICE}
 
 
 @app.get("/health")

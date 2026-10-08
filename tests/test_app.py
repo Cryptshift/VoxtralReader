@@ -160,3 +160,23 @@ def test_index_served_regardless_of_cwd(client, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = client.get("/")
     assert r.status_code == 200 and "Voxtral Reader" in r.text
+
+
+# ── Voices ───────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"voices": ["casual_male", "fr_female"]}, ["casual_male", "fr_female"]),           # 0.4.x-style
+    ({"object": "list", "data": [{"id": "af_heart", "name": "af_heart"}]}, ["af_heart"]),  # 0.5.x
+    ({"object": "list", "model": "m", "data": []}, []),                                   # 0.5.x, Voxtral
+    (["a", "b", "a"], ["a", "b"]),
+    ({"data": [{"name": "x"}, {"voice": "y"}, 3, None]}, ["x", "y"]),
+    ("garbage", []),
+])
+def test_parse_voices_handles_all_shapes(payload, expected):
+    assert app_module._parse_voices(payload) == expected
+
+
+def test_voices_falls_back_to_presets_when_tts_is_down(client):
+    j = client.get("/voices").json()
+    assert j["voices"] == app_module.PRESET_VOICES
+    assert j["default"] == app_module.DEFAULT_VOICE
