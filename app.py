@@ -476,10 +476,10 @@ async def list_voices():
 async def health():
     try:
         r = await _client().get(f"{TTS_URL}/v1/models", timeout=3.0)
-        vllm_ok = r.status_code == 200
+        tts_ok = r.status_code == 200
     except Exception:
-        vllm_ok = False
-    return {"app": "ok", "vllm": vllm_ok}
+        tts_ok = False
+    return {"app": "ok", "tts": tts_ok}
 
 
 def _silence_wav() -> bytes:

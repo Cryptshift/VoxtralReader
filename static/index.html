@@ -480,6 +480,11 @@
   .wc-pin:hover { color: var(--text); background: var(--surface2); }
   .wc-pin.pinned { color: var(--accent-br); }
 
+  /* Close/minimize/pin only work in the desktop window (run.py, pywebview);
+     hide them in a normal browser tab. */
+  body:not(.in-webview) .window-controls,
+  body:not(.in-webview) .wc-pin { display: none; }
+
   /* scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -1192,8 +1197,8 @@ async function checkServerStatus() {
     const j = await r.json();
     const dot = $('status-dot');
     const lbl = $('status-label');
-    dot.className   = j.vllm ? 'ok' : 'bad';
-    lbl.textContent = j.vllm ? 'vLLM ready' : 'vLLM offline';
+    dot.className   = j.tts ? 'ok' : 'bad';
+    lbl.textContent = j.tts ? 'TTS ready' : 'TTS offline';
   } catch {
     $('status-dot').className   = 'bad';
     $('status-label').textContent = 'server error';
@@ -1535,6 +1540,12 @@ $('btn-books').addEventListener('click', () => {
 function _api() {
   return (typeof window !== 'undefined' && window.pywebview?.api) || null;
 }
+
+function _markWebview() {
+  if (window.pywebview) document.body.classList.add('in-webview');
+}
+window.addEventListener('pywebviewready', _markWebview);
+_markWebview();
 
 $('btn-wc-close').addEventListener('click', () => {
   _api()?.close();

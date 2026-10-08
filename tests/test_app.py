@@ -180,3 +180,7 @@ def test_voices_falls_back_to_presets_when_tts_is_down(client):
     j = client.get("/voices").json()
     assert j["voices"] == app_module.PRESET_VOICES
     assert j["default"] == app_module.DEFAULT_VOICE
+
+
+def test_health_reports_tts_status(client):
+    assert client.get("/health").json() == {"app": "ok", "tts": False}
