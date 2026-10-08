@@ -49,7 +49,17 @@ _books_state: dict = {
     "lines":  [],   # raw OCR lines from books_reader.ocr_page()
     "chunks": [],   # books_reader.lines_to_chunks() output (includes line_indices)
     "win":    None, # window info dict from books_reader
+    "text":   "",   # full text of the last capture, to detect unchanged pages
 }
+
+# After a page turn, poll the Books window until the new page settles.
+_PAGE_POLL_INTERVAL = 0.4   # seconds between captures
+_PAGE_POLL_ATTEMPTS = 10
+
+_BOOKS_NOT_FOUND = (
+    "Books window not found — make sure Books is open and Screen "
+    "Recording permission is granted in System Settings."
+)
 
 VLLM_URL     = os.getenv("VLLM_URL",     "http://localhost:8000")
 TTS_MODEL    = os.getenv("TTS_MODEL",    "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16")
@@ -285,18 +295,10 @@ async def books_status():
     }
 
 
-@app.post("/books/capture")
-async def books_capture():
-    """Screenshot + OCR the current Books page and register it as a document."""
-    global _books_state
-
-    lines, win = await asyncio.to_thread(books_reader.ocr_page)
-    if not lines or win is None:
-        raise HTTPException(
-            503,
-            "Books window not found — make sure Books is open and Screen "
-            "Recording permission is granted in System Settings."
-        )
+def _register_books_page(lines: list, win: dict) -> dict:
+    """Turn OCR lines into a document, remember it for highlighting/page
+    comparison, and return the API response."""
+    full_text = books_reader.page_text(lines)
 
     # Separate heading/title lines from body text
     page_title, body_lines = books_reader.extract_title(lines)
@@ -308,6 +310,7 @@ async def books_capture():
     _books_state["lines"]  = body_lines
     _books_state["chunks"] = chunks
     _books_state["win"]    = win
+    _books_state["text"]   = full_text
 
     if _highlight_api:
         _highlight_api.clear()
@@ -334,6 +337,15 @@ async def books_capture():
     }
 
 
+@app.post("/books/capture")
+async def books_capture():
+    """Screenshot + OCR the current Books page and register it as a document."""
+    lines, win = await asyncio.to_thread(books_reader.ocr_page)
+    if not lines or win is None:
+        raise HTTPException(503, _BOOKS_NOT_FOUND)
+    return _register_books_page(lines, win)
+
+
 @app.post("/books/highlight/{chunk_idx}")
 async def books_highlight(chunk_idx: int):
     """Update the highlight overlay for the given chunk index."""
@@ -341,7 +353,7 @@ async def books_highlight(chunk_idx: int):
     lines  = _books_state["lines"]
     win    = _books_state["win"]
 
-    if not chunks or win is None or chunk_idx >= len(chunks):
+    if not chunks or win is None or not 0 <= chunk_idx < len(chunks):
         return {"ok": False}
 
     line_indices = chunks[chunk_idx].get("line_indices", [])
@@ -374,13 +386,53 @@ async def books_highlight(chunk_idx: int):
     return {"ok": True, "rects": len(rects)}
 
 
-@app.post("/books/next_page")
-async def books_next_page():
-    """Clear highlights and advance one page in Books."""
+@app.post("/books/clear")
+async def books_clear():
+    """Clear the highlight overlay (used when Books mode stops)."""
     if _highlight_api:
         _highlight_api.clear()
-    await asyncio.to_thread(books_reader.turn_page)
     return {"ok": True}
+
+
+@app.post("/books/next_page")
+async def books_next_page():
+    """Advance one page in Books, then capture and return the new page.
+
+    Waits for the page to settle (two matching captures) and returns 409 if
+    the text never changes (last page, or the key press didn't reach Books),
+    so the client stops instead of re-reading the same page forever.
+    """
+    if _highlight_api:
+        _highlight_api.clear()
+    previous = _books_state["text"]
+    try:
+        await asyncio.to_thread(books_reader.turn_page)
+    except books_reader.PageTurnError as e:
+        raise HTTPException(503, str(e))
+
+    candidate = None  # (text, lines, win) of the last capture that differed
+    for _ in range(_PAGE_POLL_ATTEMPTS):
+        await asyncio.sleep(_PAGE_POLL_INTERVAL)
+        lines, win = await asyncio.to_thread(books_reader.ocr_page)
+        if not lines or win is None:
+            continue
+        text = books_reader.page_text(lines)
+        if books_reader.same_page(previous, text):
+            candidate = None
+            continue
+        if candidate and books_reader.same_page(candidate[0], text):
+            return _register_books_page(lines, win)   # settled on a new page
+        candidate = (text, lines, win)
+
+    if candidate:
+        return _register_books_page(candidate[1], candidate[2])
+    if _books_state["win"] is None and not previous:
+        raise HTTPException(503, _BOOKS_NOT_FOUND)
+    raise HTTPException(
+        409,
+        "The page didn't change — this may be the end of the book, or Books "
+        "didn't receive the page-turn key press.",
+    )
 
 
 @app.get("/voices")

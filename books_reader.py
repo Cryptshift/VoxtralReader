@@ -8,6 +8,7 @@ Requires (System Settings > Privacy & Security):
 """
 from __future__ import annotations
 
+import difflib
 import re
 import subprocess
 from typing import Any
@@ -111,9 +112,63 @@ def ocr_page() -> tuple[list[dict], dict | None]:
             'bbox': (bb.origin.x, bb.origin.y, bb.size.width, bb.size.height),
         })
 
-    # Sort top-to-bottom: higher Vision Y → closer to top of page
-    lines.sort(key=lambda l: -l['bbox'][1])
-    return lines, win
+    return sort_reading_order(lines), win
+
+
+# ── Reading order ──────────────────────────────────────────────────────────────
+
+def _top(line: dict) -> float:
+    """Top edge of a line in Vision coordinates (higher = closer to the top)."""
+    return line['bbox'][1] + line['bbox'][3]
+
+
+def sort_reading_order(lines: list[dict]) -> list[dict]:
+    """
+    Order OCR lines for reading.
+
+    Normally that is simply top-to-bottom. When Books shows a two-page spread
+    (lines sit entirely in the left or right half of the window), read the
+    whole left page first, then the right page; sorting the spread by height
+    alone would alternate between the two pages line by line.
+    """
+    by_height = sorted(lines, key=lambda l: -_top(l))
+    left, right, spanning = [], [], []
+    for line in lines:
+        x, _, w, _ = line['bbox']
+        if x + w <= 0.52:
+            left.append(line)
+        elif x >= 0.48:
+            right.append(line)
+        else:
+            spanning.append(line)
+
+    is_spread = len(left) >= 3 and len(right) >= 3 and len(spanning) <= 0.2 * len(lines)
+    if not is_spread:
+        return by_height
+
+    # Lines crossing the gutter above both pages (e.g. a running title) come
+    # first; any others are read with the left page.
+    highest = max(_top(l) for l in left + right)
+    head = [l for l in spanning if _top(l) >= highest]
+    rest = [l for l in spanning if _top(l) < highest]
+    key = lambda l: -_top(l)
+    return sorted(head, key=key) + sorted(left + rest, key=key) + sorted(right, key=key)
+
+
+# ── Page comparison ────────────────────────────────────────────────────────────
+
+def page_text(lines: list[dict]) -> str:
+    return " ".join(" ".join(l['text'].split()) for l in lines)
+
+
+def same_page(a: str, b: str, threshold: float = 0.95) -> bool:
+    """True when two OCR captures are (almost) the same text, i.e. the page
+    didn't change. Tolerates small OCR differences between captures."""
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= threshold
 
 
 # ── Heading / title detection ──────────────────────────────────────────────────
@@ -124,7 +179,7 @@ def extract_title(lines: list[dict]) -> tuple[str | None, list[dict]]:
     the first line — the whitespace the user can see between heading and body.
 
     Vision bbox: (x, y, w, h), y = bottom edge of line, 0=image bottom, 1=top.
-    Lines are already sorted top-to-bottom (descending y+h).
+    Lines are already in reading order (see sort_reading_order).
 
     Gap between consecutive lines i and i+1:
       gap = lines[i].y  -  (lines[i+1].y + lines[i+1].h)
@@ -233,11 +288,45 @@ def lines_to_chunks(lines: list[dict], max_chars: int = 160) -> list[dict]:
 
 # ── Page turn ─────────────────────────────────────────────────────────────────
 
+# System Events sends key codes to whichever app is frontmost, not to the
+# process named in the tell block, so Books has to be activated first.
+_TURN_PAGE_SCRIPT = """
+tell application "Books" to activate
+delay 0.3
+tell application "System Events" to tell process "Books" to key code 124
+"""
+
+
+class PageTurnError(RuntimeError):
+    pass
+
+
 def turn_page() -> None:
-    """Advance one page in Books (right-arrow key via System Events)."""
-    subprocess.run(
-        ['osascript', '-e',
-         'tell application "System Events" to tell process "Books"'
-         ' to key code 124'],
-        capture_output=True,
-    )
+    """Advance one page in Books (right-arrow key via System Events).
+
+    Raises PageTurnError with a user-facing message if osascript fails,
+    typically because the Accessibility or Automation permission is missing.
+    """
+    try:
+        r = subprocess.run(
+            ['osascript', '-e', _TURN_PAGE_SCRIPT],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise PageTurnError(f"Could not run osascript: {e}") from e
+    if r.returncode == 0:
+        return
+    detail = (r.stderr or r.stdout or "").strip()
+    low = detail.lower()
+    if "1002" in detail or "not allowed to send keystrokes" in low or "assistive" in low:
+        raise PageTurnError(
+            "macOS blocked the page-turn key press. Allow the app running Voxtral "
+            "Reader (Terminal or Python) in System Settings > Privacy & Security > "
+            "Accessibility."
+        )
+    if "-1743" in detail or "not authorized" in low:
+        raise PageTurnError(
+            "macOS blocked control of Books/System Events. Allow it in System "
+            "Settings > Privacy & Security > Automation."
+        )
+    raise PageTurnError(f"Could not turn the page: {detail or 'osascript failed'}")

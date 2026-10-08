@@ -1463,28 +1463,38 @@ function showToast(msg, dur = 3000, isErr = false) {
 
 // ── Books mode ───────────────────────────────────────────────────────────────
 
-async function _loadBooksPage() {
-  const r = await fetch('/books/capture', { method: 'POST' });
+async function _booksRequest(path, fallbackMsg) {
+  const r = await fetch(path, { method: 'POST' });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
-    throw new Error(err.detail || 'Could not capture Books page');
+    throw new Error(typeof err.detail === 'string' ? err.detail : fallbackMsg);
   }
   return r.json();
+}
+
+function _showBooksPage(data) {
+  docData = data;
+  fileName.textContent = data.page_title ? `\u{1F4D6} ${data.page_title}` : 'Books \u2014 current page';
+  renderDocument(data);
+  player.play();
+}
+
+function _stopBooksMode() {
+  booksMode = false;
+  $('btn-books').classList.remove('books-active');
+  fetch('/books/clear', { method: 'POST' }).catch(() => {});   // clear highlights only
 }
 
 async function _startBooksMode() {
   $('btn-books').classList.add('books-active');
   showToast('Capturing Books page\u2026');
   try {
-    const data = await _loadBooksPage();
-    docData   = data;
+    const data = await _booksRequest('/books/capture', 'Could not capture Books page');
     booksMode = true;
-    fileName.textContent = data.page_title ? `\u{1F4D6} ${data.page_title}` : 'Books \u2014 current page';
-    renderDocument(data);
+    _showBooksPage(data);
     // Switch sidebar to sections tab
     $$('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'sections'));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'section-list'));
-    player.play();
     showToast(`Reading ${data.total_chunks} paragraph${data.total_chunks === 1 ? '' : 's'}`, 2000);
   } catch (err) {
     $('btn-books').classList.remove('books-active');
@@ -1496,29 +1506,23 @@ async function _startBooksMode() {
 async function _booksNextPage() {
   showToast('Turning page\u2026', 1200);
   try {
-    await fetch('/books/next_page', { method: 'POST' });
-    // Brief pause for the Books page animation
-    await new Promise(r => setTimeout(r, 900));
-    const data = await _loadBooksPage();
-    docData = data;
-    if (data.page_title) fileName.textContent = `\u{1F4D6} ${data.page_title}`;
-    renderDocument(data);
-    player.play();
+    // The server turns the page, waits for it to settle and returns it, or
+    // fails with 409 if the page didn't change (so we never loop forever).
+    const data = await _booksRequest('/books/next_page', 'Could not load the next page');
+    if (!booksMode) return;   // stopped while the page was turning
+    _showBooksPage(data);
     showToast('Next page', 1200);
   } catch (err) {
-    booksMode = false;
-    $('btn-books').classList.remove('books-active');
-    showToast('Could not load next page \u2014 stopping', 3500, true);
+    if (!booksMode) return;
+    _stopBooksMode();
+    showToast(`${err.message} Books mode stopped.`, 8000, true);
   }
 }
 
 $('btn-books').addEventListener('click', () => {
   if (booksMode) {
-    // Stop books mode
-    booksMode = false;
-    $('btn-books').classList.remove('books-active');
+    _stopBooksMode();   // must not turn the page
     player.stop();
-    fetch('/books/next_page', { method: 'POST' }).catch(() => {});  // clears highlights
     showToast('Books mode stopped', 2000);
   } else {
     _startBooksMode();
