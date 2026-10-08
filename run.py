@@ -38,7 +38,7 @@ def _start_tts() -> None:
     print("  \u2192 Starting mlx-audio TTS server\u2026")
     _tts_proc = subprocess.Popen(
         [sys.executable, "-m", "mlx_audio.server",
-         "--host", "0.0.0.0", "--port", str(TTS_PORT),
+         "--host", "127.0.0.1", "--port", str(TTS_PORT),
          "--workers", str(WORKERS)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

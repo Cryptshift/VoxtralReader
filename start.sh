@@ -27,7 +27,7 @@ else
   echo ""
 
   python -m mlx_audio.server \
-    --host 0.0.0.0 \
+    --host 127.0.0.1 \
     --port ${TTS_PORT} \
     --workers ${WORKERS} &
 
@@ -53,4 +53,4 @@ echo "  Shortcuts: Space=play/pause  ←/→=paragraph  ■=stop generation"
 echo ""
 
 cd "$(dirname "$0")"
-uvicorn app:app --host 0.0.0.0 --port ${APP_PORT} --reload
+uvicorn app:app --host 127.0.0.1 --port ${APP_PORT} --reload

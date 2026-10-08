@@ -1059,12 +1059,22 @@ function renderHistory() {
     const item = document.createElement('div');
     item.className = 'hist-item' + (docData && docData.doc_id === entry.doc_id ? ' active-doc' : '');
     item.dataset.docId = entry.doc_id;
-    item.innerHTML = `
-      <div class="hist-item-body">
-        <div class="hist-name" title="${entry.filename}">${entry.filename}</div>
-        <div class="hist-meta">${entry.total_chunks} paragraphs &bull; ${fmtTime(entry.timestamp)}</div>
-      </div>
-      <button class="hist-del" title="Remove">&#x2715;</button>`;
+    // Built with textContent (never innerHTML): file names are user-controlled.
+    const body = document.createElement('div');
+    body.className = 'hist-item-body';
+    const name = document.createElement('div');
+    name.className   = 'hist-name';
+    name.title       = entry.filename;
+    name.textContent = entry.filename;
+    const meta = document.createElement('div');
+    meta.className   = 'hist-meta';
+    meta.textContent = `${entry.total_chunks} paragraphs • ${fmtTime(entry.timestamp)}`;
+    body.append(name, meta);
+    const del = document.createElement('button');
+    del.className   = 'hist-del';
+    del.title       = 'Remove';
+    del.textContent = '✕';
+    item.append(body, del);
 
     item.querySelector('.hist-item-body').addEventListener('click', () => {
       switchDocument(entry);
@@ -1137,10 +1147,10 @@ async function loadVoices() {
   try {
     const r = await fetch('/voices');
     const j = await r.json();
-    const voices = j.voices || [];
-    voiceSelect.innerHTML = voices
-      .map(v => `<option value="${v}"${v === 'casual_male' ? ' selected' : ''}>${v}</option>`)
-      .join('');
+    const voices = (j.voices || []).filter(v => typeof v === 'string');
+    if (!voices.length) return;
+    voiceSelect.replaceChildren(...voices.map(v =>
+      new Option(v, v, false, v === 'casual_male')));
   } catch {}
 }
 loadVoices();

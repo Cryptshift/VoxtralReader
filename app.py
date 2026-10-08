@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import struct
 import tempfile
 from pathlib import Path
@@ -39,13 +40,33 @@ PRESET_VOICES = [
 ]
 
 # ── Persistent history ────────────────────────────────────────────────────────
-DATA_DIR  = Path.home() / ".voxtral"
+# VOXTRAL_HOME overrides the data directory (default: ~/.voxtral).
+DATA_DIR  = Path(os.getenv("VOXTRAL_HOME") or Path.home() / ".voxtral").expanduser()
 HIST_FILE = DATA_DIR / "history.json"
 DOCS_DIR  = DATA_DIR / "docs"
 
+# Document ids end up in file names, so only allow a conservative alphabet.
+# Covers new UUID hex ids, legacy numeric ids ("0", "1", ...) and "books-<n>".
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _check_id(doc_id) -> str:
+    if not isinstance(doc_id, str) or not _SAFE_ID.match(doc_id):
+        raise HTTPException(400, "Invalid document id")
+    return doc_id
+
+
+def _doc_path(doc_id: str) -> Path:
+    path = DOCS_DIR / f"{_check_id(doc_id)}.json"
+    # Belt and braces: never touch anything outside DOCS_DIR.
+    if path.resolve().parent != DOCS_DIR.resolve():
+        raise HTTPException(400, "Invalid document id")
+    return path
+
+
 def _dirs():
-    DATA_DIR.mkdir(exist_ok=True)
-    DOCS_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 def _load_meta() -> list:
     try:
@@ -84,6 +105,7 @@ async def upload_pdf(file: UploadFile = File(...), include_refs: bool = Query(Fa
 
 @app.get("/audio/{doc_id}/{chunk_idx}")
 async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOICE)):
+    _check_id(doc_id)
     if doc_id not in documents:
         raise HTTPException(404, "Document not found")
     doc = documents[doc_id]
@@ -109,15 +131,15 @@ async def get_audio(doc_id: str, chunk_idx: int, voice: str = Query(DEFAULT_VOIC
 
 @app.post("/restore")
 async def restore_document(payload: dict):
-    doc_id = payload.get("doc_id")
-    if doc_id and doc_id not in documents:
+    doc_id = _check_id(payload.get("doc_id"))
+    if doc_id not in documents:
         documents[doc_id] = {k: payload[k] for k in ("sections","chunks","total_chunks","has_references") if k in payload}
     return {"ok": True}
 
 
 @app.delete("/document/{doc_id}")
 async def delete_document(doc_id: str):
-    documents.pop(doc_id, None)
+    documents.pop(_check_id(doc_id), None)
     return {"ok": True}
 
 
@@ -133,7 +155,7 @@ async def save_history(payload: dict):
     _dirs()
     doc_id = payload["doc_id"]
     # Persist full doc data separately
-    (DOCS_DIR / f"{doc_id}.json").write_text(
+    _doc_path(doc_id).write_text(
         json.dumps(payload["data"], ensure_ascii=False)
     )
     # Update metadata list
@@ -146,7 +168,7 @@ async def save_history(payload: dict):
 
 @app.get("/history/{doc_id}")
 async def get_doc_data(doc_id: str):
-    path = DOCS_DIR / f"{doc_id}.json"
+    path = _doc_path(doc_id)
     if not path.exists():
         raise HTTPException(404, "Document not found in history")
     return json.loads(path.read_text())
@@ -154,9 +176,9 @@ async def get_doc_data(doc_id: str):
 
 @app.delete("/history/{doc_id}")
 async def delete_history(doc_id: str):
+    doc_path = _doc_path(doc_id)
     entries = [e for e in _load_meta() if e["doc_id"] != doc_id]
     _save_meta(entries)
-    doc_path = DOCS_DIR / f"{doc_id}.json"
     if doc_path.exists():
         doc_path.unlink()
     documents.pop(doc_id, None)
