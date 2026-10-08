@@ -502,7 +502,8 @@
     pointer-events: none;
     transition: opacity 0.2s, transform 0.2s;
     z-index: 100;
-    white-space: nowrap;
+    max-width: min(560px, calc(100vw - 32px));
+    text-align: center;
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   #toast.error { border-color: var(--danger); color: var(--danger); }
@@ -689,6 +690,7 @@ class Player {
     this.speed    = 1.0;
     this._cache       = new Map();   // idx -> Promise<string|null>
     this._controllers = new Map();   // idx -> AbortController
+    this._errors      = new Map();   // idx -> last error message
     this._genTimes    = new Map();   // idx -> generation ms
     this._rtfWindow   = [];          // rolling RTF samples (last 5)
     // Bumped on every action that supersedes a pending _playIdx (load, next,
@@ -732,13 +734,14 @@ class Player {
 
   load(docId, chunks) {
     this._playGen++;
+    this._abortAll();      // don't let the previous document keep the TTS busy
     this._clearAudio();
     this.docId   = docId;
     this.chunks  = chunks;
     this.idx     = 0;
     this.playing = false;
     this._clearCache();
-    this._fetchChunk(0);   // starts the sequential chain 0 → 1 → 2 → …
+    if (chunks.length) this._fetchChunk(0);   // warm the first chunk
     this.onChunkChange(0);
     this.onStateChange();
   }
@@ -807,8 +810,12 @@ class Player {
   }
 
   setVoice(v) {
+    if (v === this.voice) return;
     this.voice = v;
     this._playGen++;
+    // Old-voice requests are useless now; cancel them so they don't queue
+    // ahead of the new ones on the TTS server.
+    this._abortAll();
     // Drop cached URLs for the old voice but DON'T revoke the URL the audio
     // element is currently playing — that would cut the chunk off mid-word
     // and trip _onError into skipping ahead.
@@ -818,6 +825,16 @@ class Player {
       if (u && u !== playingSrc) URL.revokeObjectURL(u);
     });
     this._cache.clear();
+    this._errors.clear();
+    if (!this.chunks.length) return;
+    if (this.playing && (this.audio.paused || this.audio.ended || !this.audio.src)) {
+      // A chunk was still being generated in the old voice when the voice
+      // changed; the _playIdx waiting on it has bailed, so restart it.
+      this._playIdx(this.idx);
+    } else {
+      // Current chunk keeps playing in the old voice; warm the next one.
+      this._fetchChunk(Math.min(this.idx + 1, this.chunks.length - 1));
+    }
   }
   setSpeed(s) { this.speed = s; this.audio.playbackRate = s; }
 
@@ -850,18 +867,25 @@ class Player {
     this.onChunkChange(idx);
 
     this.onLoading(true);
-    let url = await this._fetchChunk(idx);
+    const url = await this._fetchChunk(idx);
     this.onLoading(false);
 
     if (myGen !== this._playGen || !this.playing) return;
+
+    if (!url) {
+      // Generation failed even after retries: stop and say so instead of
+      // silently skipping through the document.
+      this.playing = false;
+      this.onStateChange();
+      this.onChunkError(idx, this._errors.get(idx) || 'Audio generation failed');
+      return;
+    }
 
     // Chunk idx is confirmed ready — pre-warm the next two while this one
     // plays. _fetchChunk dedupes via cache, so this is safe to call repeatedly.
     for (let n = 1; n <= 2; n++) {
       if (idx + n < this.chunks.length) this._fetchChunk(idx + n);
     }
-
-    if (!url) url = this._silenceUrl(0.3);
 
     this.audio.src = url;
     this.audio.playbackRate = this.speed;
@@ -879,63 +903,81 @@ class Player {
     const ctrl = new AbortController();
     this._controllers.set(idx, ctrl);
     const p = this._fetchWithRetry(idx, ctrl.signal)
-      .then(url => {
-        if (url) this.onChunkCached(idx);
-        this._controllers.delete(idx);
-        return url;
+      .catch(e => {
+        if (e.name !== 'AbortError') this._errors.set(idx, e.message);
+        return null;
       })
-      .catch(() => { this._controllers.delete(idx); return null; });
+      .then(url => {
+        // Only remove our own controller: a newer request for the same idx
+        // (after a voice change) may have replaced it, and Stop must still
+        // be able to abort that one.
+        if (this._controllers.get(idx) === ctrl) this._controllers.delete(idx);
+        if (this._cache.get(idx) !== p) {
+          // Superseded by load/stop/voice change while in flight.
+          if (url) URL.revokeObjectURL(url);
+          return null;
+        }
+        if (url) this.onChunkCached(idx);
+        else this._cache.delete(idx);   // don't cache failures; allow a retry
+        return url;
+      });
     this._cache.set(idx, p);
     return p;
   }
 
-  async _fetchWithRetry(idx, signal, maxRetries = 3) {
-    const url = `/audio/${this.docId}/${idx}?voice=${encodeURIComponent(this.voice)}`;
-    const t0  = performance.now();
+  async _fetchWithRetry(idx, signal, maxRetries = 2) {
+    // Capture these now: retries must not pick up a different doc or voice.
+    const docId = this.docId;
+    const url   = `/audio/${encodeURIComponent(docId)}/${idx}?voice=${encodeURIComponent(this.voice)}`;
+    const t0    = performance.now();
+    let restored = false;
+    let lastErr  = 'Audio generation failed';
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let r;
       try {
-        const r = await fetch(url, { signal });
-        if (r.ok) {
-          const b = await r.blob();
-          this._genTimes.set(idx, performance.now() - t0);
-          return URL.createObjectURL(b);
-        }
-        // Server error — wait before retry (not on last attempt)
-        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+        r = await fetch(url, { signal });
       } catch (e) {
-        if (e.name === 'AbortError') return null;  // intentional stop — don't retry
-        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+        if (e.name === 'AbortError') throw e;   // intentional stop — don't retry
+        lastErr = 'Reader server unreachable';
+        if (attempt < maxRetries) await _sleep(600 * (attempt + 1), signal);
+        continue;
       }
+      if (r.ok) {
+        const b = await r.blob();
+        this._genTimes.set(idx, performance.now() - t0);
+        return URL.createObjectURL(b);
+      }
+      lastErr = (await r.json().then(j => j.detail).catch(() => null)) || `HTTP ${r.status}`;
+      if (r.status === 404 && !restored) {
+        // The server lost the document (e.g. it restarted): re-send it and
+        // retry straight away without counting this as an attempt.
+        restored = true;
+        if (await this.onDocMissing(docId)) { attempt--; continue; }
+      }
+      if (r.status >= 400 && r.status < 500) break;   // retrying won't help
+      if (attempt < maxRetries) await _sleep(600 * (attempt + 1), signal);
     }
-    return null;  // all retries exhausted — player will skip this chunk
+    throw new Error(lastErr);
   }
 
   stop() {
     this._playGen++;
     this.playing = false;
     this._clearAudio();
-    this._controllers.forEach(ctrl => ctrl.abort());
-    this._controllers.clear();
+    this._abortAll();
     this._clearCache();
     this.onStateChange();
   }
 
-  _silenceUrl(seconds = 0.3) {
-    const sr = 24000, n = Math.floor(sr * seconds);
-    const buf = new ArrayBuffer(44 + n * 2);
-    const v = new DataView(buf);
-    const s = (o, str) => [...str].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-    s(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); s(8, 'WAVE');
-    s(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
-    v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
-    v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-    s(36, 'data'); v.setUint32(40, n * 2, true);
-    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  _abortAll() {
+    this._controllers.forEach(ctrl => ctrl.abort());
+    this._controllers.clear();
   }
 
   _clearCache() {
     this._cache.forEach(async p => { const u = await p; if (u) URL.revokeObjectURL(u); });
     this._cache.clear();
+    this._errors.clear();
   }
 
   async _onEnded() {
@@ -957,6 +999,19 @@ class Player {
   onPlaybackComplete()           {}
   onChunkCached(idx)             {}
   onSpeedUpdate(rtf, genMs)      {}
+  onChunkError(idx, message)     {}
+  async onDocMissing(docId)      { return false; }
+}
+
+// Resolves after ms, or rejects with an AbortError as soon as signal aborts.
+function _sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(t);
+      reject(new DOMException('Aborted', 'AbortError'));
+    }, { once: true });
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1085,12 +1140,12 @@ function renderHistory() {
       await fetch(`/history/${entry.doc_id}`, { method: 'DELETE' });
       docHistory = docHistory.filter(h => h.doc_id !== entry.doc_id);
       if (docData && docData.doc_id === entry.doc_id) {
-        player.audio.pause();
+        player.stop();   // also cancels any in-flight generation
         docData = null;
         chunksWrap.innerHTML = '';
         sectionList.innerHTML = '<div style="padding:20px 14px;color:var(--muted);font-size:12px;">Open a PDF to see sections</div>';
         emptyState.style.display = '';
-        btnPlay.disabled = btnPrev.disabled = btnNext.disabled = true;
+        btnPlay.disabled = btnPrev.disabled = btnNext.disabled = btnStop.disabled = true;
         fileName.textContent = 'No file loaded';
       }
       renderHistory();
@@ -1294,6 +1349,25 @@ player.onSpeedUpdate = (rtf, genMs) => {
   el.textContent = rtf.toFixed(1) + '× RT';
   el.title = `Real-time factor: ${rtf.toFixed(2)}× (generated in ${(genMs/1000).toFixed(1)}s)`;
   el.className = 'rtf-indicator ' + (rtf >= 2 ? 'fast' : rtf >= 1 ? 'ok' : 'slow');
+};
+
+player.onChunkError = (idx, message) => {
+  showToast(`Couldn't generate paragraph ${idx + 1}: ${message}`, 7000, true);
+};
+
+// The server forgot the document (it restarted): re-register what we have.
+player.onDocMissing = async docId => {
+  if (!docData || docData.doc_id !== docId) return false;
+  try {
+    const r = await fetch('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(docData),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
 };
 
 player.onPlaybackComplete = () => {
